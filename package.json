@@ -1,0 +1,36 @@
+{
+  "name": "@luxmargos/terminal-windows",
+  "version": "0.1.0",
+  "description": "Open commands in native terminal windows from Node.js or a CLI.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "bin": {
+    "terminal-windows": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepack": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
