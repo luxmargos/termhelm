@@ -1,0 +1,131 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const childProcessActivity = vi.hoisted(() => ({
+  spawn: vi.fn()
+}));
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: childProcessActivity.spawn };
+});
+
+import { launchWindowsTerminalController } from '../src/platforms/windows.js';
+
+const temporaryDirectories: string[] = [];
+
+function temporaryDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-backend-test-'));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+afterEach(() => {
+  childProcessActivity.spawn.mockReset();
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe('Windows controller backend launch boundary', () => {
+  it('does not retry through PowerShell after a selected native controller starts', () => {
+    let onError: ((error: Error) => void) | undefined;
+    childProcessActivity.spawn.mockReturnValue({
+      pid: 4321,
+      once: vi.fn((event: string, listener: (error: Error) => void) => {
+        if (event === 'error') onError = listener;
+      }),
+      unref: vi.fn()
+    });
+    const directory = temporaryDirectory();
+    const helperPath = join(directory, 'terminal-windows-controller.exe');
+    const controller = launchWindowsTerminalController(
+      { title: 'display only', cwd: directory, command: 'ver >nul' },
+      { exitAfterCommand: true },
+      { stateDirectory: directory },
+      { kind: 'native', helperPath }
+    );
+
+    expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
+    expect(childProcessActivity.spawn.mock.calls[0]?.[0]).toBe(helperPath);
+    expect(onError).toBeTypeOf('function');
+    onError!(new Error('native controller failed after spawn'));
+    expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
+    expect(controller.helperPid).toBe(4321);
+  });
+
+  it('launches only the PowerShell backend selected during preflight', () => {
+    childProcessActivity.spawn.mockReturnValue({
+      pid: 4322,
+      once: vi.fn(),
+      unref: vi.fn()
+    });
+    const directory = temporaryDirectory();
+    const scriptPath = join(directory, 'terminal-windows-controller.ps1');
+    const controller = launchWindowsTerminalController(
+      {
+        title: '-SelfTest display only',
+        cwd: directory,
+        command: 'ver >nul',
+        env: { TEMP: '-target-only-temp' }
+      },
+      { exitAfterCommand: true },
+      { stateDirectory: directory },
+      { kind: 'powershell', executable: 'powershell.exe', scriptPath }
+    );
+
+    expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
+    expect(childProcessActivity.spawn.mock.calls[0]?.[0]).toBe('powershell.exe');
+    const args = childProcessActivity.spawn.mock.calls[0]?.[1] as string[];
+    const payloadIndex = args.indexOf('-PayloadPath');
+    const payloadPath = args[payloadIndex + 1]!;
+    expect(args).toEqual([
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', scriptPath,
+      '-PayloadPath', payloadPath
+    ]);
+    expect(args).not.toContain('-SelfTest display only');
+    expect(args).not.toContain('-target-only-temp');
+    for (const legacyFlag of [
+      '-CommandFile',
+      '-Comspec',
+      '-Cwd',
+      '-Title',
+      '-SessionId',
+      '-TargetId',
+      '-TargetToken',
+      '-ReadyFile',
+      '-StoppingFile',
+      '-StoppedFile',
+      '-FailedFile',
+      '-ForcedFile',
+      '-GraceMs',
+      '-ForceWaitMs',
+      '-SupervisorPid',
+      '-ShutdownToken',
+      '-ControlEndpoint',
+      '-ControlToken'
+    ]) {
+      expect(args).not.toContain(legacyFlag);
+    }
+    const payload = JSON.parse(readFileSync(payloadPath, 'utf8'));
+    expect(basename(payloadPath)).toBe(
+      `${payload.sessionId}.${payload.targetId}.controller.json`
+    );
+    expect(payload).toMatchObject({
+      cwd: directory,
+      title: '-SelfTest display only',
+      environment: [{ key: 'TEMP', value: '-target-only-temp' }],
+      commandFile: expect.stringMatching(/\.cmd$/)
+    });
+    expect(childProcessActivity.spawn.mock.calls[0]?.[2]?.env).not.toMatchObject({
+      TEMP: '-target-only-temp'
+    });
+    expect(controller.helperPid).toBe(4322);
+  });
+});

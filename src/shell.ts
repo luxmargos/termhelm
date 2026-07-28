@@ -1,4 +1,8 @@
-import type { TerminalLaunchOptions, TerminalTarget } from './types.js';
+import type { InternalTerminalLaunchOptions, TerminalTarget } from './types.js';
+import {
+  terminalMarkerJson,
+  type TerminalControlPaths
+} from './platforms/controller.js';
 
 export function posixShellQuote(value: string): string {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -11,12 +15,23 @@ export function appleScriptString(value: string): string {
 export function buildPosixEnvPrefix(env?: Record<string, string>): string {
   const entries = Object.entries(env ?? {});
   if (entries.length === 0) return '';
-  return `${entries.map(([key, value]) => `${key}=${posixShellQuote(value)}`).join(' ')} `;
+  return `${entries.map(([key, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
+    return `${key}=${posixShellQuote(value)}`;
+  }).join(' ')} `;
+}
+
+function buildPosixMarkerCommands(variableName: string, path: string, value: string): string[] {
+  const quotedPath = posixShellQuote(path);
+  return [
+    `${variableName}=${quotedPath}.$$.tmp`,
+    `printf '%s\\n' ${posixShellQuote(value)} > "$${variableName}" && chmod 600 "$${variableName}" && mv -f "$${variableName}" ${quotedPath}`
+  ];
 }
 
 export function buildDefaultPosixCommand(target: TerminalTarget): string {
   const envPrefix = buildPosixEnvPrefix(target.env);
-  const commands = [`cd ${posixShellQuote(target.cwd)} && ${envPrefix}${target.command}`];
+  const commands = [`cd ${posixShellQuote(target.cwd ?? process.cwd())} && ${envPrefix}${target.command}`];
 
   if (target.exitMessage) {
     commands.push(`printf '\n%s\n' ${posixShellQuote(target.exitMessage)}`);
@@ -26,73 +41,86 @@ export function buildDefaultPosixCommand(target: TerminalTarget): string {
   return commands.join('; ');
 }
 
+function buildManagedPosixSidecarCommand(
+  options: InternalTerminalLaunchOptions,
+  control: TerminalControlPaths
+): string {
+  const sidecar = options.posixSidecar;
+  if (!sidecar) throw new Error('Managed POSIX terminal mode requires its bundled controller sidecar.');
+  const runnerFunctionName = `terminal_windows_runner_${control.id.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  const failedCommands = buildPosixMarkerCommands(
+    'failed_tmp',
+    control.failedPath,
+    terminalMarkerJson(control, 'failed')
+  );
+  const executable = posixShellQuote(sidecar.executablePath);
+  const script = posixShellQuote(sidecar.scriptPath);
+  const payload = posixShellQuote(sidecar.encodedPayload);
+  const commands = [
+    `set -m || { printf '%s\n' 'This shell does not support job control, so managed terminal mode cannot run.'; ${failedCommands.join('; ')}; exit 1; }`,
+    `${runnerFunctionName}() {`,
+    `  exec ${executable} ${script} run ${payload}`,
+    '}',
+    `${runnerFunctionName} &`,
+    'runner_pid=$!',
+    `fg ${posixShellQuote(`%?${runnerFunctionName}`)}`,
+    'runner_status=$?',
+    `if ! ${executable} ${script} wait-finalize ${payload} "$runner_pid"; then`,
+    '  exit 1',
+    'fi'
+  ];
+  if (options.shutdownCompletePath) {
+    commands.push(`: > ${posixShellQuote(options.shutdownCompletePath)} 2>/dev/null || true`);
+  }
+  commands.push('exit "$runner_status"');
+  return commands.join('\n');
+}
+
 export function buildSupervisedPosixCommand(
   target: TerminalTarget,
-  options: TerminalLaunchOptions
+  options: InternalTerminalLaunchOptions,
+  control?: TerminalControlPaths
 ): string {
-  const envPrefix = buildPosixEnvPrefix(target.env);
-  const shutdownCompletePath = options.shutdownCompletePath
-    ? posixShellQuote(options.shutdownCompletePath)
-    : null;
-  const aliveChecks: string[] = [];
-
-  if (options.supervisorPid) {
-    aliveChecks.push(`kill -0 ${Number(options.supervisorPid)} 2>/dev/null`);
+  void target;
+  if (!control || !options.posixSidecar) {
+    throw new Error('Managed POSIX terminal mode requires its bundled controller sidecar.');
   }
-
-  if (options.shutdownTokenPath) {
-    aliveChecks.push(`test -e ${posixShellQuote(options.shutdownTokenPath)}`);
-  }
-
-  const isSupervisorAlive = aliveChecks.length > 0 ? aliveChecks.join(' && ') : ':';
-  const commands = [
-    `cd ${posixShellQuote(target.cwd)} || exit 1`,
-    "set -m || { printf '%s\\n' 'This shell does not support job control, so managed terminal mode cannot run.'; exit 1; }",
-    `(${envPrefix}${target.command}) &`,
-    'child_pid=$!',
-    '(',
-    `  while ${isSupervisorAlive}; do`,
-    '    sleep 1',
-    '  done',
-    '  kill -TERM "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true',
-    '  sleep 2',
-    '  kill -KILL "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true',
-    ') &',
-    'watchdog_pid=$!',
-    'fg %1',
-    'status=$?',
-    'kill "$watchdog_pid" 2>/dev/null || true',
-    'wait "$watchdog_pid" 2>/dev/null || true'
-  ];
-
-  if (target.exitMessage) {
-    commands.push(`printf '\n%s\n' ${posixShellQuote(target.exitMessage)}`);
-  }
-
-  if (shutdownCompletePath) {
-    commands.push(`: > ${shutdownCompletePath} 2>/dev/null || true`);
-  }
-
-  commands.push(options.exitAfterCommand ? 'exit "$status"' : 'exec "${SHELL:-/bin/sh}" -l');
-  return commands.join('\n');
+  return buildManagedPosixSidecarCommand(options, control);
 }
 
 export function buildPosixCommand(
   target: TerminalTarget,
-  options: TerminalLaunchOptions = {}
+  options: InternalTerminalLaunchOptions = {},
+  control?: TerminalControlPaths
 ): string {
-  if (options.supervisorPid || options.shutdownTokenPath) {
-    return buildSupervisedPosixCommand(target, options);
+  if (options.supervisorPid || options.shutdownTokenPath || control) {
+    return buildSupervisedPosixCommand(target, options, control);
   }
   return buildDefaultPosixCommand(target);
 }
 
 export function windowsCmdQuote(value: string): string {
-  return `"${String(value).replace(/"/g, '\\"')}"`;
+  const stringValue = String(value);
+  if (/[\0\r\n"]/.test(stringValue)) throw new Error('Windows cmd.exe quoted values cannot contain quotes, NUL, or line breaks.');
+  return `"${stringValue.replace(/%/g, '%%')}"`;
 }
 
 export function windowsEchoEscape(value: string): string {
-  return String(value).replace(/\^/g, '^^').replace(/&/g, '^&').replace(/</g, '^<').replace(/>/g, '^>');
+  const stringValue = String(value);
+  if (/[\0\r\n]/.test(stringValue)) throw new Error('Windows batch values cannot contain NUL or line breaks.');
+  return stringValue
+    .replace(/\^/g, '^^')
+    .replace(/%/g, '%%')
+    .replace(/&/g, '^&')
+    .replace(/\|/g, '^|')
+    .replace(/</g, '^<')
+    .replace(/>/g, '^>')
+    .replace(/\(/g, '^(')
+    .replace(/\)/g, '^)');
+}
+
+export function windowsBatchPath(value: string): string {
+  return windowsCmdQuote(value);
 }
 
 export function powershellQuote(value: string): string {

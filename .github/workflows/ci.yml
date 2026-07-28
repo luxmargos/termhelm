@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build host Windows controller with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File native\windows\build.ps1 -Architecture x64
+
+      - name: Self-test native Windows controller
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: native\win32-x64\terminal-windows-controller.exe --self-test
+
+      - name: Self-test PowerShell Core Windows controller
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\terminal-windows-controller.ps1 -SelfTest
+
+      - name: Self-test Windows PowerShell 5.1 controller
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\terminal-windows-controller.ps1 -SelfTest
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test public API types
+        run: pnpm run test:types
+
+      - name: Build TypeScript
+        run: pnpm run build
+
+  windows-helpers:
+    name: Windows helper (${{ matrix.architecture }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture:
+          - x64
+          - arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build MSVC C++ helper
+        shell: cmd
+        run: pnpm run build:windows-helper -- -Architecture ${{ matrix.architecture }}
+
+      - name: Validate helper
+        run: pnpm run verify:windows-helpers -- --architecture ${{ matrix.architecture }}
+
+      - name: Upload helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-helper-${{ matrix.architecture }}
+          path: native/win32-${{ matrix.architecture }}/terminal-windows-controller.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Validate npm package
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - windows-helpers
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download x64 helper
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-helper-x64
+          path: native/win32-x64
+
+      - name: Download arm64 helper
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-helper-arm64
+          path: native/win32-arm64
+
+      - name: Validate required package files
+        run: pnpm run verify:windows-helpers
+
+      - name: Pack
+        run: |
+          mkdir -p package-output
+          pnpm pack --pack-destination package-output
+
+      - name: Verify packed helper paths
+        shell: bash
+        run: |
+          package_path="$(find package-output -maxdepth 1 -name '*.tgz' -print -quit)"
+          test -n "$package_path"
+          tar -tzf "$package_path" > package-contents.txt
+          grep -Fxq package/native/win32-x64/terminal-windows-controller.exe package-contents.txt
+          grep -Fxq package/native/win32-arm64/terminal-windows-controller.exe package-contents.txt
+          grep -Fxq package/native/windows/terminal-windows-controller.ps1 package-contents.txt

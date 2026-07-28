@@ -12,7 +12,8 @@ describe('shell helpers', () => {
     expect(buildPosixEnvPrefix({ A: 'one', B: "two's" })).toBe("A='one' B='two'\\''s' ");
   });
   it('quotes Windows values', () => {
-    expect(windowsCmdQuote('a"b')).toBe('"a\\"b"');
+    expect(windowsCmdQuote('a b%PATH%')).toBe('"a b%%PATH%%"');
+    expect(() => windowsCmdQuote('a"b')).toThrow('cannot contain quotes');
     expect(windowsEchoEscape('a&b<c>d^e')).toBe('a^&b^<c^>d^^e');
     expect(powershellQuote("a'b")).toBe("'a''b'");
   });
