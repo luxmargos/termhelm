@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateManagedTerminalLaunchOptions, validateTerminalTarget } from './config.js';
+import {
+  validateManagedTerminalLabel,
+  validateManagedTerminalLaunchOptions,
+  validateTerminalTarget
+} from './config.js';
 import {
   openManagedControlServer,
   requestManagedSessionStop,
@@ -48,6 +52,8 @@ import type {
   LinuxLauncher,
   ManagedTerminalCloseReason,
   ManagedTerminalCloseResult,
+  ManagedTerminalKillOptions,
+  ManagedTerminalKillResult,
   ManagedTerminalLaunchOptions,
   ManagedTerminalSession,
   ResolvedTerminalTarget,
@@ -215,26 +221,28 @@ async function waitForSessionTermination(
   }
 }
 
-async function replaceExistingSession(
+async function stopExistingSession(
   identity: ManagedLabelIdentity,
   deadline: number,
-  contenderGeneration: string
-): Promise<void> {
+  contenderGeneration: string,
+  reason: ManagedTerminalCloseReason,
+  action: string
+): Promise<ManagedSessionRecordV2 | null> {
   const legacy = inspectLegacySupervisorRecord(identity.label);
   if (legacy.status === 'migration-required') throw migrationError(identity, legacy.reason);
   if (legacy.status === 'inactive' && !removeInactiveLegacySupervisorRecord(identity.label)) {
     throw new Error(
       `Legacy termhelm 0.1.x state for label ${JSON.stringify(identity.label)} changed while being inspected. ` +
-      'Refusing replacement because ownership is uncertain.'
+      `Refusing to ${action} because ownership is uncertain.`
     );
   }
 
   const record = readManagedSessionRecord(identity);
-  if (record === null) return;
+  if (record === null) return null;
   const generationDifference = BigInt(record.generation) - BigInt(contenderGeneration);
   if (generationDifference > 0n) {
     throw new Error(
-      `Managed terminal launch for label ${JSON.stringify(identity.label)} was superseded by a newer recorded generation.`
+      `Managed terminal operation for label ${JSON.stringify(identity.label)} was superseded by a newer recorded generation.`
     );
   }
   if (generationDifference === 0n) {
@@ -247,7 +255,7 @@ async function replaceExistingSession(
   const remaining = remainingTime(deadline);
   if (remaining === 0) {
     throw new Error(
-      `Timed out before the previous managed process tree for label ${JSON.stringify(identity.label)} could be stopped.`
+      `Timed out before the managed process tree for label ${JSON.stringify(identity.label)} could be stopped.`
     );
   }
   try {
@@ -257,22 +265,22 @@ async function replaceExistingSession(
       endpoint: record.controlEndpoint,
       authenticationToken: record.authenticationToken,
       requestId: randomUUID(),
-      reason: 'replaced',
+      reason,
       timeoutMs: recoveryAlreadyConfirmed ? Math.min(1_000, remaining) : remaining
     });
   } catch (error) {
     const confirmed = await waitForSessionTermination(identity, record, deadline);
     if (!confirmed) {
       throw new Error(
-        `Could not authenticate and confirm shutdown of the previous managed process tree for label ` +
-        `${JSON.stringify(identity.label)}. Refusing to launch a replacement. ${errorMessage(error)}`,
+        `Could not authenticate and confirm shutdown of the managed process tree for label ` +
+        `${JSON.stringify(identity.label)}. Refusing to ${action}. ${errorMessage(error)}`,
         { cause: error }
       );
     }
   }
 
   const currentRecord = readManagedSessionRecord(identity);
-  if (currentRecord === null) return;
+  if (currentRecord === null) return record;
   if (!recordsMatch(currentRecord, record)) {
     throw new Error(
       `Managed terminal registry ownership changed unexpectedly for label ${JSON.stringify(identity.label)}.`
@@ -282,8 +290,8 @@ async function replaceExistingSession(
     const confirmed = await waitForSessionTermination(identity, record, deadline);
     if (!confirmed) {
       throw new Error(
-        `The previous managed process tree for label ${JSON.stringify(identity.label)} did not acknowledge termination. ` +
-        'Refusing to launch a replacement.'
+        `The managed process tree for label ${JSON.stringify(identity.label)} did not acknowledge termination. ` +
+        `Refusing to ${action}.`
       );
     }
   }
@@ -292,6 +300,54 @@ async function replaceExistingSession(
       `Could not remove the stopped managed terminal record for label ${JSON.stringify(identity.label)} safely.`
     );
   }
+  return record;
+}
+
+/**
+ * Stops the currently owned managed session for a label without launching a
+ * replacement. The operation participates in generation ordering so it also
+ * supersedes older queued launches for the same label.
+ */
+export async function killManagedTerminalWindows(
+  label: string,
+  options: ManagedTerminalKillOptions = {}
+): Promise<ManagedTerminalKillResult> {
+  const normalizedLabel = validateManagedTerminalLabel(label);
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new Error('Managed terminal kill options must be an object.');
+  }
+  const timeoutMs = options.timeoutMs
+    ?? DEFAULT_MANAGED_SHUTDOWN_DELAY_MS
+      + DEFAULT_MANAGED_CLOSE_WAIT_TIMEOUT_MS
+      + DEFAULT_MANAGED_REPLACE_EXTRA_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff) {
+    throw new Error('Managed terminal kill options.timeoutMs must be an integer from 0 through 2147483647.');
+  }
+
+  const validatedOptions = validateManagedTerminalLaunchOptions({
+    label: normalizedLabel,
+    labelScope: options.labelScope
+  });
+  const identity = resolveManagedLabelIdentity(validatedOptions.label, validatedOptions.labelScope);
+  const operationId = randomUUID();
+  const generation = createManagedLaunchGeneration();
+  const intent = registerManagedLaunchIntent(identity, operationId, generation);
+  const deadline = Date.now() + timeoutMs;
+
+  return await withManagedLabelLocks([identity], timeoutMs, async () => {
+    assertManagedLaunchIntentIsLatest(identity, intent);
+    removeSupersededManagedLaunchIntents(identity, intent);
+    const record = await stopExistingSession(
+      identity,
+      deadline,
+      intent.generation,
+      'closed',
+      'complete the kill request'
+    );
+    return record === null
+      ? { status: 'not-found', label: identity.label }
+      : { status: 'killed', label: identity.label, sessionId: record.sessionId };
+  });
 }
 
 class ManagedTerminalSessionImpl implements ManagedTerminalSession {
@@ -439,10 +495,12 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
             removeSupersededManagedLaunchIntents(identity, intent);
           }
           for (const identity of this.replacementIdentities) {
-            await replaceExistingSession(
+            await stopExistingSession(
               identity,
               deadline,
-              this.launchIntents.get(identity.key)!.generation
+              this.launchIntents.get(identity.key)!.generation,
+              'replaced',
+              'launch a replacement'
             );
             this.assertLatestLaunchIntents();
             if (this.requestedStopReason) {

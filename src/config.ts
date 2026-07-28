@@ -100,9 +100,13 @@ function validateConfigOptions(value: Record<string, unknown>, baseDirectory: st
   const label = value.label === undefined ? undefined : validateManagedTerminalLabel(value.label);
   const options: TerminalWindowsConfigOptions = {};
 
-  // Managed-only fields are intentionally deferred when no label exists. This
-  // lets plain configs remain label-free and ensures managed config mode reports
-  // the required-label error before touching a project root.
+  const hasManagedOnlyOptions = value.labelScope !== undefined
+    || value.replaceLabels !== undefined
+    || value.shutdownDelayMs !== undefined
+    || value.closeWaitTimeoutMs !== undefined
+    || value.replaceTimeoutMs !== undefined;
+  if (label === undefined && hasManagedOnlyOptions) throw new Error(MANAGED_TERMINAL_LABEL_ERROR);
+
   if (label !== undefined) {
     options.label = label;
     options.labelScope = validateLabelScope(value.labelScope, baseDirectory);
@@ -117,7 +121,17 @@ function validateConfigOptions(value: Record<string, unknown>, baseDirectory: st
     if (closeWaitTimeoutMs !== undefined) options.closeWaitTimeoutMs = closeWaitTimeoutMs;
 
     const replaceTimeoutMs = validateNonNegativeNumber(value.replaceTimeoutMs, 'Managed terminal options.replaceTimeoutMs');
-    if (replaceTimeoutMs !== undefined) options.replaceTimeoutMs = replaceTimeoutMs;
+    if (replaceTimeoutMs !== undefined) {
+      options.replaceTimeoutMs = replaceTimeoutMs;
+    } else {
+      const derivedReplaceTimeoutMs = (shutdownDelayMs ?? 2_500) + (closeWaitTimeoutMs ?? 6_000) + 3_000;
+      if (derivedReplaceTimeoutMs > MAX_PORTABLE_TIMEOUT_MS) {
+        throw new Error(
+          `Managed terminal derived replace timeout must not exceed ${MAX_PORTABLE_TIMEOUT_MS}; ` +
+          'set a smaller shutdownDelayMs or closeWaitTimeoutMs, or provide replaceTimeoutMs explicitly.'
+        );
+      }
+    }
   }
 
   if (value.exitAfterCommand !== undefined) {
@@ -179,14 +193,26 @@ export function validateTerminalWindowsConfig(value: unknown, baseDirectory = pr
   };
 }
 
-export function readTerminalWindowsConfig(path: string): TerminalWindowsConfig {
+function readTerminalWindowsConfigJson(path: string): { configPath: string; parsed: unknown } {
   const configPath = resolve(path);
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf8'));
+    return { configPath, parsed: JSON.parse(readFileSync(configPath, 'utf8')) as unknown };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to read JSON config ${path}: ${message}`);
   }
+}
+
+/** Reads only identity/lifecycle options, allowing kill to ignore stale launch targets. */
+export function readTerminalWindowsConfigOptions(path: string): TerminalWindowsConfigOptions | undefined {
+  const { configPath, parsed } = readTerminalWindowsConfigJson(path);
+  if (!isRecord(parsed)) throw new Error('Config must be an object.');
+  if (parsed.options === undefined) return undefined;
+  if (!isRecord(parsed.options)) throw new Error('Config options must be an object.');
+  return validateConfigOptions(parsed.options, dirname(configPath));
+}
+
+export function readTerminalWindowsConfig(path: string): TerminalWindowsConfig {
+  const { configPath, parsed } = readTerminalWindowsConfigJson(path);
   return validateTerminalWindowsConfig(parsed, dirname(configPath));
 }

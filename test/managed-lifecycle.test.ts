@@ -102,7 +102,11 @@ vi.mock('../src/platforms/windows.js', () => ({
   resolveWindowsControllerHelperPath: () => 'C:\\fake\\termhelm-controller.exe'
 }));
 
-import { launchManagedTerminalWindows, startManagedTerminalWindows } from '../src/managed.js';
+import {
+  killManagedTerminalWindows,
+  launchManagedTerminalWindows,
+  startManagedTerminalWindows
+} from '../src/managed.js';
 import { TerminalControllerLaunchError, type TerminalProcessController } from '../src/platforms/controller.js';
 import {
   readManagedLaunchIntents,
@@ -185,6 +189,57 @@ describe('managed lifecycle state machine', () => {
     expect(readManagedLaunchIntents(resolveManagedLabelIdentity(label))).toEqual([
       expect.objectContaining({ sessionId: latest.id })
     ]);
+  });
+
+  it('kills an active managed session by label and reports missing labels', async () => {
+    fakePlatform.reset();
+    const label = `kill-${randomUUID()}`;
+    const session = startManagedTerminalWindows([target('kill me')], {
+      label,
+      shutdownDelayMs: 0,
+      closeWaitTimeoutMs: 500,
+      replaceTimeoutMs: 3_000
+    });
+    await session.ready;
+
+    await expect(killManagedTerminalWindows(label, { timeoutMs: 3_000 })).resolves.toEqual({
+      status: 'killed',
+      label,
+      sessionId: session.id
+    });
+    await expect(session.closed).resolves.toMatchObject({ reason: 'closed' });
+    expect(fakePlatform.controllers.find(controller => controller.sessionId === session.id)?.active).toBe(false);
+    await expect(killManagedTerminalWindows(label, { timeoutMs: 3_000 })).resolves.toEqual({
+      status: 'not-found',
+      label
+    });
+  });
+
+  it('uses a kill request to supersede an older queued launch', async () => {
+    fakePlatform.reset();
+    const label = `kill-contender-${randomUUID()}`;
+    const identity = resolveManagedLabelIdentity(label);
+    let releaseLock!: () => void;
+    let lockEntered!: () => void;
+    const entered = new Promise<void>(resolve => { lockEntered = resolve; });
+    const gate = new Promise<void>(resolve => { releaseLock = resolve; });
+    const blocker = withManagedLabelLocks([identity], 5_000, async () => {
+      lockEntered();
+      await gate;
+    });
+    await entered;
+
+    const launch = startManagedTerminalWindows([target('never launched')], {
+      label,
+      replaceTimeoutMs: 4_000
+    });
+    const kill = killManagedTerminalWindows(label, { timeoutMs: 4_000 });
+    releaseLock();
+    await blocker;
+
+    await expect(launch.ready).rejects.toThrow('superseded');
+    await expect(kill).resolves.toEqual({ status: 'not-found', label });
+    expect(fakePlatform.launch).not.toHaveBeenCalled();
   });
 
   it('observes natural completion only after every target UUID is stopped', async () => {

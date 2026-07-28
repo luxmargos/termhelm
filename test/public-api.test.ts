@@ -158,7 +158,7 @@ describe('managed public API boundary', () => {
 
     const config = readTerminalWindowsConfig(configPath);
     const inline = parseTerminalWindowsCliArgs([
-      'managed',
+      'launch',
       '--label', 'dev',
       '--label-scope', 'project',
       '--project-root', '.',

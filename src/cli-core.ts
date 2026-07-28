@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { validateManagedTerminalLabel, validateManagedTerminalLaunchOptions } from './config.js';
 import type { ManagedTerminalLabelScope, ManagedTerminalLaunchOptions, ResolvedTerminalTarget } from './types.js';
 
-export type CliMode = 'launch' | 'managed';
+export type CliMode = 'launch' | 'kill';
 
 export interface CliRequest {
   mode?: CliMode;
@@ -19,9 +19,9 @@ export function helpText(): string {
 
 Usage:
   termhelm launch --config <path>
-  termhelm managed --config <path>
-  termhelm launch --title <title> [--cwd <cwd>] --command <command>
-  termhelm managed --label <label> --title <title> [--cwd <cwd>] --command <command>
+  termhelm launch [--label <label>] --title <title> [--cwd <cwd>] --command <command>
+  termhelm kill --config <path>
+  termhelm kill --label <label> [--label-scope user|project] [--project-root <path>]
 
 Options:
   --config <path>              Read targets and options from a JSON config file.
@@ -30,13 +30,14 @@ Options:
   --command <command>          Command for a single inline target.
   --env KEY=VALUE              Environment variable for a single inline target. Repeatable.
   --exit-message <text>        Message printed after the command exits.
-  --label <label>              Required identity for an inline managed launch.
+  --label <label>              Enable managed launch behavior, or select the session to kill.
   --label-scope user|project   Scope the managed label. Defaults to user.
-  --project-root <path>        Existing project root. Defaults to the resolved --cwd for project scope.
+  --project-root <path>        Project root. Defaults to the resolved --cwd for launch, or current directory for kill.
   --help                       Show this help text.
 
-Managed config files must provide options.label. Managed identity flags apply
-only to inline mode; put them in the config options object when using --config.
+A launch with a label is managed; a launch without one is plain. Config files
+select managed behavior by defining options.label. Kill reads the same label and
+scope from the config used to launch the session.
 `;
 }
 
@@ -61,7 +62,13 @@ function resolveInlineCwd(value: CliValues['cwd']): string {
 }
 
 function inlineTarget(values: CliValues): ResolvedTerminalTarget | undefined {
-  if (values.title === undefined && values.cwd === undefined && values.command === undefined) return undefined;
+  if (
+    values.title === undefined
+    && values.cwd === undefined
+    && values.command === undefined
+    && values.env === undefined
+    && values['exit-message'] === undefined
+  ) return undefined;
   if (typeof values.title !== 'string' || typeof values.command !== 'string') {
     throw new Error('Inline mode requires --title and --command.');
   }
@@ -90,7 +97,7 @@ function hasManagedIdentityFlags(values: CliValues): boolean {
 function inlineManagedOptions(
   values: CliValues,
   label: string,
-  cwd: string
+  cwd?: string
 ): ManagedTerminalLaunchOptions {
   const scopeValue = values['label-scope'];
   const projectRoot = values['project-root'];
@@ -103,7 +110,10 @@ function inlineManagedOptions(
     if (projectRoot !== undefined && (typeof projectRoot !== 'string' || projectRoot.trim().length === 0)) {
       throw new Error('--project-root must be a non-empty path when provided.');
     }
-    labelScope = { type: 'project', root: typeof projectRoot === 'string' ? projectRoot : cwd };
+    labelScope = {
+      type: 'project',
+      root: typeof projectRoot === 'string' ? projectRoot : (cwd ?? resolveInlineCwd(undefined))
+    };
   } else {
     if (projectRoot !== undefined) throw new Error('--project-root is only valid when --label-scope is project.');
     if (scopeValue === 'user') labelScope = { type: 'user' };
@@ -115,7 +125,7 @@ function inlineManagedOptions(
 export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
   const [mode] = args;
   if (!mode || mode === '--help' || mode === '-h') return { help: true };
-  if (mode !== 'launch' && mode !== 'managed') throw new Error(`Unknown command: ${mode}`);
+  if (mode !== 'launch' && mode !== 'kill') throw new Error(`Unknown command: ${mode}`);
 
   const parsed = parseArgs({
     args: args.slice(1),
@@ -138,23 +148,29 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
 
   const values = parsed.values as CliValues;
   const configPath = values.config;
-  const hasInlineTargetFlags = values.title !== undefined || values.cwd !== undefined || values.command !== undefined;
+  const hasInlineTargetFlags = values.title !== undefined
+    || values.cwd !== undefined
+    || values.command !== undefined
+    || values.env !== undefined
+    || values['exit-message'] !== undefined;
   const hasIdentityFlags = hasManagedIdentityFlags(values);
 
-  if (mode === 'launch' && hasIdentityFlags) {
-    throw new Error('--label, --label-scope, and --project-root are only valid for managed mode.');
-  }
-  if (typeof configPath === 'string' && hasIdentityFlags) {
-    throw new Error('Managed identity flags cannot be combined with --config; define them in config options.');
-  }
-  if (typeof configPath === 'string' && hasInlineTargetFlags) {
-    throw new Error('Use either --config or inline target flags, not both.');
+  if (typeof configPath === 'string' && (hasIdentityFlags || hasInlineTargetFlags)) {
+    throw new Error('Use either --config or inline flags, not both; define labels and targets in the config file.');
   }
   if (typeof configPath === 'string') return { mode, help: false, configPath };
+
+  if (mode === 'kill') {
+    if (hasInlineTargetFlags) throw new Error('Kill accepts only managed label identity flags or --config.');
+    const label = validateManagedTerminalLabel(values.label);
+    const managedOptions = inlineManagedOptions(values, label);
+    return { mode, help: false, managedOptions };
+  }
+
   if (hasInlineTargetFlags) {
-    // Match the library boundary: a managed inline label is validated before
-    // any remaining option, target, filesystem, or launch work.
-    const label = mode === 'managed' ? validateManagedTerminalLabel(values.label) : undefined;
+    // A label changes launch semantics, so validate it before target filesystem
+    // access and never fall back to a plain launch when it is invalid.
+    const label = hasIdentityFlags ? validateManagedTerminalLabel(values.label) : undefined;
     const target = inlineTarget(values)!;
     const managedOptions = label === undefined
       ? undefined
@@ -164,5 +180,6 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
       : { mode, help: false, target };
   }
 
+  if (hasIdentityFlags) validateManagedTerminalLabel(values.label);
   throw new Error('Missing --config or inline target flags.');
 }

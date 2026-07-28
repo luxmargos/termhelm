@@ -1,11 +1,17 @@
 import type {
   ManagedTerminalCloseResult,
+  ManagedTerminalKillOptions,
+  ManagedTerminalKillResult,
   ManagedTerminalLaunchOptions,
   ManagedTerminalSession,
   TerminalLaunchOptions,
   TerminalTarget
 } from '../src/index.js';
-import { launchManagedTerminalWindows, startManagedTerminalWindows } from '../src/index.js';
+import {
+  killManagedTerminalWindows,
+  launchManagedTerminalWindows,
+  startManagedTerminalWindows
+} from '../src/index.js';
 
 // @ts-expect-error Controller metadata is intentionally absent from the public entry point.
 import type { InternalTerminalLaunchOptions } from '../src/index.js';
@@ -21,6 +27,8 @@ const ready: Promise<void> = session.ready;
 const closed: Promise<ManagedTerminalCloseResult> = session.closed;
 const closeResult: Promise<ManagedTerminalCloseResult> = session.close();
 const wrapperResult: Promise<void> = launchManagedTerminalWindows([target], options);
+const killOptions: ManagedTerminalKillOptions = { timeoutMs: 5_000 };
+const killResult: Promise<ManagedTerminalKillResult> = killManagedTerminalWindows('dev', killOptions);
 
 // @ts-expect-error A managed label has no fallback.
 const missingLabel: ManagedTerminalLaunchOptions = {};
@@ -39,6 +47,8 @@ void ready;
 void closed;
 void closeResult;
 void wrapperResult;
+void killOptions;
+void killResult;
 void missingLabel;
 void unsafeManagedOption;
 void unsafePidOption;

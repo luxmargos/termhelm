@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MANAGED_TERMINAL_LABEL_ERROR,
   readTerminalWindowsConfig,
+  readTerminalWindowsConfigOptions,
   validateManagedTerminalLaunchOptions,
   validateTerminalTarget,
   validateTerminalWindowsConfig
@@ -47,6 +48,21 @@ describe('config validation', () => {
     }
   });
 
+  it('rejects managed-only config options without a label', () => {
+    for (const options of [
+      { labelScope: { type: 'user' } },
+      { replaceLabels: [] },
+      { shutdownDelayMs: 100 },
+      { closeWaitTimeoutMs: 100 },
+      { replaceTimeoutMs: 100 }
+    ]) {
+      expect(() => validateTerminalWindowsConfig({
+        targets: [{ title: 'api', command: 'pnpm dev' }],
+        options
+      })).toThrow(MANAGED_TERMINAL_LABEL_ERROR);
+    }
+  });
+
   it('normalizes labels to NFC and treats replaceLabels as deduplicated additions', () => {
     expect(validateManagedTerminalLaunchOptions({
       label: 'de\u0301v',
@@ -63,6 +79,9 @@ describe('config validation', () => {
     expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', shutdownDelayMs: 2.5 })).toThrow('shutdownDelayMs');
     expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', closeWaitTimeoutMs: 0x8000_0000 })).toThrow('closeWaitTimeoutMs');
     expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', replaceTimeoutMs: Number.NaN })).toThrow('replaceTimeoutMs');
+    expect(() => validateManagedTerminalLaunchOptions({
+      label: 'dev', shutdownDelayMs: 0x7fff_ffff
+    })).toThrow('derived replace timeout');
     expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', exitAfterCommand: 'yes' })).toThrow('exitAfterCommand');
   });
 
@@ -81,6 +100,22 @@ describe('config validation', () => {
       type: 'project',
       root: realpathSync(projectDirectory)
     });
+  });
+
+  it('reads kill identity options without validating stale launch targets', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'termhelm-kill-config-'));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, 'termhelm.json');
+    writeFileSync(configPath, JSON.stringify({
+      targets: [{ title: 'api', cwd: './missing-target-directory', command: 'pnpm dev' }],
+      options: { label: 'dev', labelScope: { type: 'project', root: '.' } }
+    }));
+
+    expect(readTerminalWindowsConfigOptions(configPath)).toMatchObject({
+      label: 'dev',
+      labelScope: { type: 'project', root: realpathSync(directory) }
+    });
+    expect(() => readTerminalWindowsConfig(configPath)).toThrow('cwd must resolve to an existing directory');
   });
 
   it('requires an explicit, existing project root', () => {

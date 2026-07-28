@@ -1,5 +1,6 @@
 import { validateTerminalTarget } from './config.js';
 import {
+  killManagedTerminalWindows,
   launchManagedTerminalWindows,
   startManagedTerminalWindows
 } from './managed.js';
@@ -27,6 +28,8 @@ export type {
   LinuxLauncher,
   ManagedTerminalCloseReason,
   ManagedTerminalCloseResult,
+  ManagedTerminalKillOptions,
+  ManagedTerminalKillResult,
   ManagedTerminalLabelScope,
   ManagedTerminalLaunchOptions,
   ManagedTerminalSession,
@@ -54,7 +57,11 @@ export {
   windowsCmdQuote,
   windowsEchoEscape
 } from './shell.js';
-export { launchManagedTerminalWindows, startManagedTerminalWindows } from './managed.js';
+export {
+  killManagedTerminalWindows,
+  launchManagedTerminalWindows,
+  startManagedTerminalWindows
+} from './managed.js';
 
 class ControllerTerminalWindowSession implements TerminalWindowSession {
   private closed = false;

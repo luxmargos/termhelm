@@ -38,26 +38,40 @@ pnpm add @luxmargos/termhelm
 
 ## CLI
 
-Run a JSON config in plain launch mode:
+`launch` is the only launch command. Without a label it performs a plain launch:
+
+```sh
+termhelm launch --title api --command "pnpm run dev"
+```
+
+Adding `--label` selects managed launch behavior:
+
+```sh
+termhelm launch \
+  --label local-dev \
+  --title api \
+  --command "pnpm run dev"
+```
+
+The same rule applies to config files. `options.label` selects managed behavior;
+omitting it selects a plain launch:
 
 ```sh
 termhelm launch --config termhelm.json
 ```
 
-Managed config mode requires `options.label` in the config:
+Stop an active managed session by its label, either inline or with the same
+config file used to launch it:
 
 ```sh
-termhelm managed --config termhelm.json
+termhelm kill --label local-dev
+termhelm kill --config termhelm.json
 ```
 
-Inline managed mode requires `--label`:
-
-```sh
-termhelm managed \
-  --label local-dev \
-  --title api \
-  --command "pnpm run dev"
-```
+`kill` stops the complete managed session for `options.label`; it does not act
+on `replaceLabels`. A session can own more than one target process tree, so use
+one label per target when independent stop control is required. Plain launches
+cannot be killed by label.
 
 Inline `--cwd` is optional and defaults to the current working directory. An
 explicit value must be non-blank and resolve to an existing directory.
@@ -67,11 +81,17 @@ project scope. `--project-root` is optional in inline mode; when omitted, the
 resolved `--cwd` is used, including its current-working-directory default:
 
 ```sh
-termhelm managed \
+termhelm launch \
   --label local-dev \
   --label-scope project \
   --title api \
   --command "pnpm run dev"
+```
+
+Use the same scope to kill that session:
+
+```sh
+termhelm kill --label local-dev --label-scope project
 ```
 
 An explicit `--project-root` takes precedence over `--cwd`. It must resolve to
@@ -128,20 +148,25 @@ Managed defaults are:
 - `replaceTimeoutMs`: `shutdownDelayMs + closeWaitTimeoutMs + 3000`
 - `exitAfterCommand`: `true`
 
-Plain config mode does not require a label.
+A config without `options.label` launches in plain mode. Managed-only options
+such as `labelScope`, `replaceLabels`, and managed timeouts require a label so a
+missing label can never silently downgrade a managed launch to plain behavior.
 
 `shutdownDelayMs` is the graceful-stop period before escalation.
 `closeWaitTimeoutMs` is the following forced-stop confirmation period.
 After platform backend preflight, `replaceTimeoutMs` bounds the complete locked
 replacement attempt across all selected labels; reaching it without
 authoritative confirmation leaves the old record in place and rejects the new
-launch. Timeout values must be whole milliseconds from `0` through
-`2147483647` on every platform.
+launch. `kill --config` also uses `replaceTimeoutMs` as its stop deadline. Timeout
+values must be whole milliseconds from `0` through `2147483647` on every
+platform. When `replaceTimeoutMs` is omitted, the derived default must also fit
+within that range.
 
 ## Library
 
 ```ts
 import {
+  killManagedTerminalWindows,
   launchManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
@@ -167,6 +192,9 @@ const session = startManagedTerminalWindows(
 await session.ready;
 const result = await session.close();
 console.log(result.reason, result.forcedTargetIds, result.warnings);
+
+const killResult = await killManagedTerminalWindows('another-session');
+console.log(killResult.status);
 ```
 
 Library target `cwd` values are optional and default to the canonical current
@@ -179,9 +207,16 @@ idempotent and resolves after shutdown is confirmed. `closed` observes the same
 final result.
 
 `launchManagedTerminalWindows(targets, options)` is the long-running convenience
-wrapper used by the CLI. Its `options` argument and `options.label` are required;
-invalid labels throw before any registry, filesystem, replacement, or process
-operation.
+wrapper used by managed CLI launches. Its `options` argument and `options.label`
+are required; invalid labels throw before any registry, filesystem, replacement,
+or process operation.
+
+`killManagedTerminalWindows(label, options)` stops the authenticated managed
+session currently owned by that label and returns `killed` or `not-found`.
+`options.timeoutMs` defaults to 11,500 ms. The operation participates in the
+same generation ordering as launch, so it supersedes older
+queued launches without using a saved PID, terminal title, or generic OS kill
+command.
 
 ## Managed Process Guarantees
 
@@ -253,8 +288,7 @@ and import path with this name, and invoke the CLI as `termhelm`.
 
 Version `0.2.0` intentionally removes the implicit `"terminal-windows"` managed
 label. Pass `{ label: "..." }` to every managed library call, add
-`options.label` to managed config files, or use `--label` for inline managed CLI
-usage.
+`options.label` to managed config files, or pass `--label` to `termhelm launch`.
 
 `replaceLabels` now clearly means additional labels; the current label is always
 included by the manager. The unsafe title-based macOS close option and public

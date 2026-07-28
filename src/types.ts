@@ -84,14 +84,24 @@ export interface ManagedTerminalSession {
   close(): Promise<ManagedTerminalCloseResult>;
 }
 
+export interface ManagedTerminalKillOptions {
+  /** User-global by default, or explicitly scoped to a canonical project root. */
+  labelScope?: ManagedTerminalLabelScope;
+  /** Total deadline for locating and stopping the managed session. */
+  timeoutMs?: number;
+}
+
+export type ManagedTerminalKillResult =
+  | { readonly status: 'killed'; readonly label: string; readonly sessionId: string }
+  | { readonly status: 'not-found'; readonly label: string };
+
 export interface TerminalWindowSession {
   close(): void;
 }
 
 /**
- * Config files can be used in plain or managed mode, so `label` is optional at
- * the file-shape level. It becomes required when the config is launched in
- * managed mode.
+ * Config files can launch plain or managed sessions. Supplying `label` selects
+ * managed behavior; omitting it selects a plain launch.
  */
 export type TerminalWindowsConfigOptions =
   & TerminalLaunchOptions

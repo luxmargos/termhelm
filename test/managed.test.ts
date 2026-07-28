@@ -24,7 +24,7 @@ const managerFunctions = vi.hoisted(() => ({
 
 vi.mock('../src/manager.js', () => managerFunctions);
 
-import { startManagedTerminalWindows } from '../src/managed.js';
+import { killManagedTerminalWindows, startManagedTerminalWindows } from '../src/managed.js';
 
 const validTarget: TerminalTarget = {
   title: 'api',
@@ -63,6 +63,20 @@ describe('managed session input boundary', () => {
       'Managed terminal options.label must be a non-empty label without surrounding whitespace.'
     );
     expect(labelScopeRead).toBe(false);
+    expectNoManagerSideEffects();
+  });
+
+  it('rejects an invalid kill label before invoking registry primitives', async () => {
+    await expect(killManagedTerminalWindows(' invalid')).rejects.toThrow(
+      'Managed terminal options.label must be a non-empty label without surrounding whitespace.'
+    );
+    expectNoManagerSideEffects();
+  });
+
+  it('rejects invalid kill options before invoking registry primitives', async () => {
+    await expect(killManagedTerminalWindows('dev', { timeoutMs: -1 })).rejects.toThrow(
+      'options.timeoutMs must be an integer from 0'
+    );
     expectNoManagerSideEffects();
   });
 
