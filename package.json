@@ -9,7 +9,7 @@
     "node": ">=20.19.0"
   },
   "bin": {
-    "termhelm": "./dist/cli.js"
+    "termhelm": "dist/cli.js"
   },
   "exports": {
     ".": {
