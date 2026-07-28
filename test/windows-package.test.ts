@@ -16,15 +16,23 @@ describe('Windows controller package contents', () => {
     expect(files.some(entry => entry === 'native' || entry === 'native/windows')).toBe(true);
   });
 
-  it('keeps official packaging strict about both native architectures', () => {
+  it('keeps official packaging strict about the PowerShell controller only', () => {
     const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      files?: string[];
       scripts?: Record<string, string>;
     };
     const verifier = readFileSync('scripts/verify-windows-helpers.mjs', 'utf8');
 
     expect(packageJson.scripts?.prepack).toContain('verify:windows-helpers');
-    expect(verifier).toContain("const supportedArchitectures = ['x64', 'arm64']");
-    expect(verifier).toContain('Missing ${architecture} Windows controller helper');
+    expect(packageJson.scripts).not.toHaveProperty('build:windows-helper');
+    expect(packageJson.files).not.toContain('native/win32-x64');
+    expect(packageJson.files).not.toContain('native/win32-arm64');
+    expect(packageJson.files).not.toContain('scripts/build-windows-helper.mjs');
+    expect(existsSync('native/windows/termhelm-controller.cpp')).toBe(false);
+    expect(existsSync('native/windows/build.ps1')).toBe(false);
+    expect(existsSync('scripts/build-windows-helper.mjs')).toBe(false);
+    expect(verifier).not.toContain('supportedArchitectures');
+    expect(verifier).not.toContain('PE signature');
     expect(verifier).toContain("const powerShellControllerRelativePath = 'native/windows/termhelm-controller.ps1'");
     expect(verifier).toContain('validatePowerShellController()');
     expect(verifier).toContain("'[string] $PayloadPath'");

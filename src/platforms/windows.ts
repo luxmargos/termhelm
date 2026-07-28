@@ -1,9 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  closeSync,
   lstatSync,
-  openSync,
-  readSync,
   realpathSync,
   statSync,
   writeFileSync
@@ -20,7 +17,6 @@ import {
   type TerminalProcessController
 } from './controller.js';
 
-const WINDOWS_HELPER_NAME = 'termhelm-controller.exe';
 const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'termhelm-controller.ps1';
 const WINDOWS_CONTROLLER_PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_WINDOWS_POWERSHELL_EXECUTABLES = ['pwsh', 'powershell.exe'] as const;
@@ -28,24 +24,17 @@ const legacyWindowsControllers = new Map<number, WindowsTerminalController>();
 let nextLegacyControllerId = 1;
 
 export interface WindowsTerminalController extends TerminalProcessController {
-  readonly helperPid: number;
+  readonly controllerPid: number;
 }
 
-export interface WindowsControllerResolutionOptions {
+export interface WindowsControllerBackend {
+  readonly executable: string;
+  readonly scriptPath: string;
+}
+
+export interface WindowsControllerBackendResolutionOptions {
   environment?: NodeJS.ProcessEnv;
-  architecture?: string;
   moduleDirectory?: string;
-}
-
-export type WindowsControllerBackend =
-  | { readonly kind: 'native'; readonly helperPath: string }
-  | {
-    readonly kind: 'powershell';
-    readonly executable: string;
-    readonly scriptPath: string;
-  };
-
-export interface WindowsControllerBackendResolutionOptions extends WindowsControllerResolutionOptions {
   powerShellExecutables?: readonly string[];
   powerShellScriptPath?: string;
   probeTimeoutMs?: number;
@@ -53,38 +42,11 @@ export interface WindowsControllerBackendResolutionOptions extends WindowsContro
 }
 
 class WindowsTerminalControllerImpl extends MarkerTerminalProcessController implements WindowsTerminalController {
-  readonly helperPid: number;
+  readonly controllerPid: number;
 
-  constructor(control: ReturnType<typeof createTerminalControlPaths>, helperPid: number) {
+  constructor(control: ReturnType<typeof createTerminalControlPaths>, controllerPid: number) {
     super(control);
-    this.helperPid = helperPid;
-  }
-}
-
-const WINDOWS_PE_MACHINES = {
-  x64: 0x8664,
-  arm64: 0xaa64
-} as const;
-
-function isWindowsControllerHelperFile(path: string, architecture: keyof typeof WINDOWS_PE_MACHINES): boolean {
-  let descriptor: number | undefined;
-  try {
-    const stat = statSync(path);
-    if (!stat.isFile() || stat.size < 70) return false;
-    descriptor = openSync(path, 'r');
-    const dosHeader = Buffer.allocUnsafe(64);
-    if (readSync(descriptor, dosHeader, 0, dosHeader.length, 0) !== dosHeader.length) return false;
-    if (dosHeader[0] !== 0x4d || dosHeader[1] !== 0x5a) return false;
-    const peOffset = dosHeader.readUInt32LE(0x3c);
-    if (peOffset > stat.size - 6) return false;
-    const peHeader = Buffer.allocUnsafe(6);
-    if (readSync(descriptor, peHeader, 0, peHeader.length, peOffset) !== peHeader.length) return false;
-    return peHeader.readUInt32LE(0) === 0x0000_4550 &&
-      peHeader.readUInt16LE(4) === WINDOWS_PE_MACHINES[architecture];
-  } catch {
-    return false;
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
+    this.controllerPid = controllerPid;
   }
 }
 
@@ -110,7 +72,7 @@ function resolveContainedPackageFile(
     if (!isContainedPath(packageRoot, candidate)) return null;
 
     // Reject a symlink or junction in every package-relative path component.
-    // Explicit absolute overrides are validated separately and intentionally
+    // Explicit absolute test paths are validated separately and intentionally
     // remain able to point outside the package.
     let current = packageRoot;
     for (const segment of relative(packageRoot, candidate).split(sep)) {
@@ -124,25 +86,6 @@ function resolveContainedPackageFile(
   } catch {
     return null;
   }
-}
-
-export function resolveWindowsControllerHelperPath(options: WindowsControllerResolutionOptions = {}): string | null {
-  const environment = options.environment ?? process.env;
-  const architecture = options.architecture ?? process.arch;
-  if (architecture !== 'x64' && architecture !== 'arm64') return null;
-  const configuredPath = environment.TERMHELM_CONTROLLER_HELPER;
-  if (configuredPath) {
-    return isAbsolute(configuredPath) && isWindowsControllerHelperFile(configuredPath, architecture)
-      ? configuredPath
-      : null;
-  }
-
-  const moduleDirectory = options.moduleDirectory ?? dirname(fileURLToPath(import.meta.url));
-  return resolveContainedPackageFile(
-    moduleDirectory,
-    ['native', `win32-${architecture}`, WINDOWS_HELPER_NAME],
-    path => isWindowsControllerHelperFile(path, architecture)
-  );
 }
 
 function isWindowsPowerShellControllerFile(path: string): boolean {
@@ -201,13 +144,16 @@ function probeWindowsControllerProcess(
 }
 
 /**
- * Selects one acknowledged Windows process-tree controller before any target is
- * started. The native helper is preferred; PowerShell is used only when its
- * bundled controller passes the same ownership self-test.
+ * Selects one acknowledged PowerShell Job Object controller before any target
+ * is started. Hosts are probed in order and the first successful host is the
+ * only backend used for the launch.
  */
 export function resolveWindowsControllerBackend(
   options: WindowsControllerBackendResolutionOptions = {}
 ): WindowsControllerBackend | null {
+  const scriptPath = resolveWindowsPowerShellControllerPath(options);
+  if (!scriptPath) return null;
+
   const environment = options.environment ?? process.env;
   const configuredProbeTimeoutMs = options.probeTimeoutMs;
   const timeoutMs = configuredProbeTimeoutMs !== undefined && Number.isFinite(configuredProbeTimeoutMs)
@@ -215,19 +161,13 @@ export function resolveWindowsControllerBackend(
     : WINDOWS_CONTROLLER_PROBE_TIMEOUT_MS;
   const probe = options.probe ?? ((executable: string, args: readonly string[]) =>
     probeWindowsControllerProcess(executable, args, environment, timeoutMs));
-
-  const helperPath = resolveWindowsControllerHelperPath(options);
-  if (helperPath && probe(helperPath, ['--self-test'])) {
-    return { kind: 'native', helperPath };
-  }
-
-  const scriptPath = resolveWindowsPowerShellControllerPath(options);
-  if (!scriptPath) return null;
   const executables = options.powerShellExecutables ?? DEFAULT_WINDOWS_POWERSHELL_EXECUTABLES;
-  for (const executable of new Set(executables)) {
-    if (typeof executable !== 'string' || executable.length === 0) continue;
+  const seenExecutables = new Set<string>();
+  for (const executable of executables) {
+    if (typeof executable !== 'string' || executable.length === 0 || seenExecutables.has(executable)) continue;
+    seenExecutables.add(executable);
     if (probe(executable, [...powerShellControllerPrefix(scriptPath), '-SelfTest'])) {
-      return { kind: 'powershell', executable, scriptPath };
+      return { executable, scriptPath };
     }
   }
   return null;
@@ -294,29 +234,6 @@ interface WindowsControllerArgumentValues {
   controlToken: string;
 }
 
-function nativeWindowsControllerArguments(values: WindowsControllerArgumentValues): string[] {
-  return [
-    '--command-file', values.commandFile,
-    '--comspec', values.comspec,
-    '--cwd', values.cwd,
-    '--title', values.title,
-    '--session-id', values.sessionId,
-    '--target-id', values.targetId,
-    '--target-token', values.targetToken,
-    '--ready-file', values.readyFile,
-    '--stopping-file', values.stoppingFile,
-    '--stopped-file', values.stoppedFile,
-    '--failed-file', values.failedFile,
-    '--forced-file', values.forcedFile,
-    '--grace-ms', values.graceMs,
-    '--force-wait-ms', values.forceWaitMs,
-    '--supervisor-pid', values.supervisorPid,
-    '--shutdown-token', values.shutdownToken,
-    '--control-endpoint', values.controlEndpoint,
-    '--control-token', values.controlToken
-  ];
-}
-
 function powerShellWindowsControllerArguments(
   scriptPath: string,
   payloadPath: string
@@ -343,22 +260,6 @@ function createWindowsControllerPayloadFile(
   return payloadPath;
 }
 
-function windowsControllerInvocation(
-  backend: WindowsControllerBackend,
-  values: WindowsControllerArgumentValues,
-  control: ReturnType<typeof createTerminalControlPaths>
-): { executable: string; args: string[] } {
-  return backend.kind === 'native'
-    ? { executable: backend.helperPath, args: nativeWindowsControllerArguments(values) }
-    : {
-      executable: backend.executable,
-      args: powerShellWindowsControllerArguments(
-        backend.scriptPath,
-        createWindowsControllerPayloadFile(values, control)
-      )
-    };
-}
-
 export function launchWindowsTerminalController(
   target: ResolvedTerminalTarget,
   options: InternalTerminalLaunchOptions = {},
@@ -367,8 +268,8 @@ export function launchWindowsTerminalController(
 ): WindowsTerminalController {
   if (!backend) {
     throw new Error(
-      'No safe Windows controller backend is available. The native helper and bundled PowerShell controller ' +
-      'could not pass their Job Object ownership self-tests. Refusing to launch without safe process-tree ownership.'
+      'No safe Windows PowerShell controller is available. The bundled controller could not pass a Job Object ' +
+      'ownership self-test with pwsh or Windows PowerShell. Refusing to launch without safe process-tree ownership.'
     );
   }
 
@@ -381,7 +282,7 @@ export function launchWindowsTerminalController(
   try {
     const commandFile = createWindowsCommandFile(target, options, control);
     const exitMessageFile = createWindowsExitMessageFile(target.exitMessage, control);
-    const invocation = windowsControllerInvocation(backend, {
+    const payloadPath = createWindowsControllerPayloadFile({
       commandFile,
       comspec: process.env.ComSpec || 'cmd.exe',
       cwd: target.cwd,
@@ -403,30 +304,28 @@ export function launchWindowsTerminalController(
       controlEndpoint: options.controlEndpoint ?? '',
       controlToken: options.authenticationToken ?? ''
     }, control);
-    const helper = spawn(invocation.executable, invocation.args, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env: backend.kind === 'powershell'
+    const controllerProcess = spawn(
+      backend.executable,
+      powerShellWindowsControllerArguments(backend.scriptPath, payloadPath),
+      {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
         // Parse/delete the payload and compile in the package environment.
         // Target variables are applied only after Add-Type succeeds and just
         // before the owned child is created.
-        ? { ...process.env }
-        : {
-          ...process.env,
-          ...target.env,
-          // Display data is file-backed and consumed by TYPE. It is never
-          // interpolated into the generated command file as shell code.
-          TERMHELM_EXIT_MESSAGE_FILE: exitMessageFile
-        }
-    });
+        env: { ...process.env }
+      }
+    );
     let controller: WindowsTerminalControllerImpl | null = null;
-    helper.once('error', () => {
+    controllerProcess.once('error', () => {
       controller?.requestClose();
     });
-    if (helper.pid === undefined) throw new Error('Windows controller helper did not return a process ID.');
-    controller = new WindowsTerminalControllerImpl(control, helper.pid);
-    helper.unref();
+    if (controllerProcess.pid === undefined) {
+      throw new Error('Windows PowerShell controller did not return a process ID.');
+    }
+    controller = new WindowsTerminalControllerImpl(control, controllerProcess.pid);
+    controllerProcess.unref();
     return controller;
   } catch (error) {
     try {

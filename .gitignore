@@ -5,7 +5,3 @@ coverage/
 .DS_Store
 *.log
 /.vscode
-/native/windows/bin/
-/native/windows/obj/
-/native/win32-x64/
-/native/win32-arm64/

@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 describe('Windows controller backend launch boundary', () => {
-  it('does not retry through PowerShell after a selected native controller starts', () => {
+  it('does not retry another PowerShell host after the selected controller starts', () => {
     let onError: ((error: Error) => void) | undefined;
     childProcessActivity.spawn.mockReturnValue({
       pid: 4321,
@@ -40,20 +40,35 @@ describe('Windows controller backend launch boundary', () => {
       unref: vi.fn()
     });
     const directory = temporaryDirectory();
-    const helperPath = join(directory, 'termhelm-controller.exe');
+    const scriptPath = join(directory, 'termhelm-controller.ps1');
     const controller = launchWindowsTerminalController(
       { title: 'display only', cwd: directory, command: 'ver >nul' },
       { exitAfterCommand: true },
       { stateDirectory: directory },
-      { kind: 'native', helperPath }
+      { executable: 'pwsh', scriptPath }
     );
 
     expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
-    expect(childProcessActivity.spawn.mock.calls[0]?.[0]).toBe(helperPath);
+    expect(childProcessActivity.spawn.mock.calls[0]?.[0]).toBe('pwsh');
     expect(onError).toBeTypeOf('function');
-    onError!(new Error('native controller failed after spawn'));
+    onError!(new Error('selected controller failed after spawn'));
     expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
-    expect(controller.helperPid).toBe(4321);
+    expect(controller.controllerPid).toBe(4321);
+  });
+
+  it('does not retry another PowerShell host when spawning the selected host throws', () => {
+    childProcessActivity.spawn.mockImplementation(() => {
+      throw new Error('spawn failed');
+    });
+    const directory = temporaryDirectory();
+
+    expect(() => launchWindowsTerminalController(
+      { title: 'display only', cwd: directory, command: 'ver >nul' },
+      { exitAfterCommand: true },
+      { stateDirectory: directory },
+      { executable: 'pwsh', scriptPath: join(directory, 'termhelm-controller.ps1') }
+    )).toThrow('spawn failed');
+    expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
   });
 
   it('launches only the PowerShell backend selected during preflight', () => {
@@ -73,7 +88,7 @@ describe('Windows controller backend launch boundary', () => {
       },
       { exitAfterCommand: true },
       { stateDirectory: directory },
-      { kind: 'powershell', executable: 'powershell.exe', scriptPath }
+      { executable: 'powershell.exe', scriptPath }
     );
 
     expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
@@ -126,6 +141,6 @@ describe('Windows controller backend launch boundary', () => {
     expect(childProcessActivity.spawn.mock.calls[0]?.[2]?.env).not.toMatchObject({
       TEMP: '-target-only-temp'
     });
-    expect(controller.helperPid).toBe(4322);
+    expect(controller.controllerPid).toBe(4322);
   });
 });

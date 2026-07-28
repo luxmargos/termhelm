@@ -96,10 +96,9 @@ vi.mock('../src/platforms/linux.js', () => ({
 vi.mock('../src/platforms/windows.js', () => ({
   launchWindowsTerminalController: fakePlatform.launch,
   resolveWindowsControllerBackend: () => ({
-    kind: 'native',
-    helperPath: 'C:\\fake\\termhelm-controller.exe'
-  }),
-  resolveWindowsControllerHelperPath: () => 'C:\\fake\\termhelm-controller.exe'
+    executable: 'powershell.exe',
+    scriptPath: 'C:\\fake\\termhelm-controller.ps1'
+  })
 }));
 
 import {

@@ -11,7 +11,7 @@ const temporaryDirectories: string[] = [];
 const unrelatedProcesses: ChildProcess[] = [];
 
 function temporaryDirectory(): string {
-  const path = mkdtempSync(join(tmpdir(), 'termhelm-native-test-'));
+  const path = mkdtempSync(join(tmpdir(), 'termhelm-windows-controller-test-'));
   temporaryDirectories.push(path);
   return path;
 }
@@ -154,69 +154,7 @@ afterEach(() => {
   }
 });
 
-describe.skipIf(process.platform !== 'win32')('MSVC Windows Job Object controller integration', () => {
-  it('gracefully stops a parent/child/grandchild tree with Ctrl+Break', () => {
-    const directory = temporaryDirectory();
-    const scriptPath = treeScript(directory, false);
-    const startedPath = join(directory, 'graceful-started.txt');
-    const signaledPath = join(directory, 'graceful-signals.txt');
-    const controller = launchWindowsTerminalController(
-      { title: 'same title', cwd: directory, command: `${windowsQuote(process.execPath)} ${windowsQuote(scriptPath)} 0` },
-      { exitAfterCommand: true },
-      { gracefulShutdownMs: 2_500 }
-    );
-    expect(controller.waitUntilReady(8_000)).toBe(true);
-    waitForFileLines(startedPath, 3);
-    expect(controller.close(10_000)).toBe(true);
-    waitForFileLines(signaledPath, 3);
-    expect(controller.wasForced()).toBe(false);
-    controller.dispose();
-  });
-
-  it('force-terminates an ignoring tree while an unrelated process survives', () => {
-    const directory = temporaryDirectory();
-    const scriptPath = treeScript(directory, true);
-    const startedPath = join(directory, 'forced-started.txt');
-    const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-      stdio: 'ignore',
-      windowsHide: true
-    });
-    unrelatedProcesses.push(unrelated);
-    const controller = launchWindowsTerminalController(
-      { title: 'same title', cwd: directory, command: `${windowsQuote(process.execPath)} ${windowsQuote(scriptPath)} 0` },
-      { exitAfterCommand: true },
-      { gracefulShutdownMs: 50 }
-    );
-    expect(controller.waitUntilReady(8_000)).toBe(true);
-    waitForFileLines(startedPath, 3);
-    expect(controller.close(10_000)).toBe(true);
-    expect(controller.wasForced()).toBe(true);
-    expect(unrelated.pid && processExists(unrelated.pid)).toBe(true);
-    controller.dispose();
-  });
-
-  it('acknowledges natural exit and keeps an explicit fallback shell owned', () => {
-    const directory = temporaryDirectory();
-    const natural = launchWindowsTerminalController(
-      { title: 'duplicate display', cwd: directory, command: 'exit /b 0' },
-      { exitAfterCommand: true }
-    );
-    expect(natural.waitUntilReady(8_000)).toBe(true);
-    expect(natural.waitUntilStopped(8_000)).toBe(true);
-    expect(natural.wasForced()).toBe(false);
-    natural.dispose();
-
-    const fallback = launchWindowsTerminalController(
-      { title: 'duplicate display', cwd: directory, command: 'ver >nul' },
-      { exitAfterCommand: false },
-      { gracefulShutdownMs: 100 }
-    );
-    expect(fallback.waitUntilReady(8_000)).toBe(true);
-    expect(fallback.waitUntilStopped(100)).toBe(false);
-    expect(fallback.close(10_000)).toBe(true);
-    fallback.dispose();
-  });
-
+describe.skipIf(process.platform !== 'win32')('PowerShell managed Windows integration', () => {
   it('replaces a real same-label tree without old/new process overlap', async () => {
     const directory = temporaryDirectory();
     const scriptPath = replacementTreeScript(directory);
@@ -302,7 +240,6 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
           { exitAfterCommand: true },
           { gracefulShutdownMs: 2_500 },
           {
-            kind: 'powershell',
             executable: backend.executable,
             scriptPath
           }
@@ -355,7 +292,6 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
           { exitAfterCommand: true, closeWaitTimeoutMs: 6_000 },
           { gracefulShutdownMs: 50 },
           {
-            kind: 'powershell',
             executable: backend.executable,
             scriptPath
           }
@@ -381,7 +317,6 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
           { exitAfterCommand: true },
           {},
           {
-            kind: 'powershell',
             executable: backend.executable,
             scriptPath
           }
@@ -412,7 +347,6 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
           },
           { gracefulShutdownMs: 500 },
           {
-            kind: 'powershell',
             executable: backend.executable,
             scriptPath
           }

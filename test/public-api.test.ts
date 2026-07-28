@@ -24,10 +24,9 @@ const platformActivity = vi.hoisted(() => {
   return {
     resolveLinuxLauncher: vi.fn(() => () => ({ command: 'mock-terminal', args: [] })),
     resolveWindowsControllerBackend: vi.fn(() => ({
-      kind: 'native' as const,
-      helperPath: 'C:\\mock\\termhelm-controller.exe'
+      executable: 'powershell.exe',
+      scriptPath: 'C:\\mock\\termhelm-controller.ps1'
     })),
-    resolveWindowsControllerHelperPath: vi.fn(() => 'C:\\mock\\termhelm-controller.exe'),
     launchLinuxTerminalController: vi.fn(launchError),
     launchMacTerminalController: vi.fn(launchError),
     launchWindowsTerminalController: vi.fn(launchError)
@@ -73,7 +72,6 @@ vi.mock('../src/platforms/windows.js', async importOriginal => {
   return {
     ...actual,
     resolveWindowsControllerBackend: platformActivity.resolveWindowsControllerBackend,
-    resolveWindowsControllerHelperPath: platformActivity.resolveWindowsControllerHelperPath,
     launchWindowsTerminalController: platformActivity.launchWindowsTerminalController
   };
 });
@@ -114,7 +112,6 @@ describe('managed public API boundary', () => {
     expect(controlActivity.open).not.toHaveBeenCalled();
     expect(platformActivity.resolveLinuxLauncher).not.toHaveBeenCalled();
     expect(platformActivity.resolveWindowsControllerBackend).not.toHaveBeenCalled();
-    expect(platformActivity.resolveWindowsControllerHelperPath).not.toHaveBeenCalled();
     expect(platformActivity.launchLinuxTerminalController).not.toHaveBeenCalled();
     expect(platformActivity.launchMacTerminalController).not.toHaveBeenCalled();
     expect(platformActivity.launchWindowsTerminalController).not.toHaveBeenCalled();

@@ -237,20 +237,18 @@ command.
   publishes that generation in its per-label intents before waiting for locks.
   Older delayed contenders self-cancel, so concurrent launches settle on the
   newest registered request without overlapping process trees.
-- Windows first probes the architecture-matched native Job Object controller.
-  If that helper is missing, invalid, or cannot pass its pre-launch self-test,
-  runtime selection tries the bundled PowerShell Job Object controller with
-  `pwsh`, then Windows PowerShell 5.1 (`powershell.exe`). Default controller
-  assets must resolve inside the canonical package root; only an explicit
-  absolute native-helper override may select an external file. The PowerShell
-  controller deletes its secret-bearing structural payload before compiling or
-  launching the target. macOS and Linux use
-  distinct process groups plus a bundled Node control sidecar, with graceful
-  termination followed by forced termination when necessary. On POSIX, only the live
-  group-leader controller may signal its own group; after it exits, the wrapper
-  only observes group emptiness and fails closed if identity is ambiguous. A
-  terminal `stopped` or `failed` marker is published only after that emptiness
-  check, so diagnostic controller failure cannot authorize replacement early.
+- Windows probes the bundled PowerShell Job Object controller with `pwsh`, then
+  Windows PowerShell 5.1 (`powershell.exe`), before any target starts. The first
+  host to pass the ownership self-test is the only host used for that launch.
+  The controller script must resolve inside the canonical package root and
+  deletes its secret-bearing structural payload before compiling or launching
+  the target. macOS and Linux use distinct process groups plus a bundled Node
+  control sidecar, with graceful termination followed by forced termination
+  when necessary. On POSIX, only the live group-leader controller may signal
+  its own group; after it exits, the wrapper only observes group emptiness and
+  fails closed if identity is ambiguous. A terminal `stopped` or `failed`
+  marker is published only after that emptiness check, so diagnostic controller
+  failure cannot authorize replacement early.
 - Managed shutdown owns the fallback shell when `exitAfterCommand` is explicitly
   `false`. On POSIX that fallback is a pipe-fed login shell so it cannot move
   itself into an unowned process group. It accepts commands and remains owned,
@@ -261,12 +259,12 @@ command.
 - On POSIX systems, descendants that deliberately escape their process group
   with `setsid()` are outside the portable ownership guarantee.
 
-Windows backend fallback is allowed only before a target may have started. If a
-selected controller starts but does not produce an authenticated terminal
-acknowledgement, the launch fails closed and no second backend is attempted.
-This prevents an uncertain native attempt and a fallback attempt from running
-the same target concurrently. Failure of every pre-launch probe also rejects
-the launch without using `taskkill`, window titles, or saved PIDs.
+PowerShell host selection is allowed only before a target may have started. If
+an already selected host starts the controller but does not produce an
+authenticated terminal acknowledgement, the launch fails closed and no second
+host is attempted. This prevents an uncertain launch from running the same
+target twice. Failure of every pre-launch probe also rejects the launch without
+using `taskkill`, window titles, or saved PIDs.
 
 If launch of one target in a multi-target session fails, already-started targets
 are rolled back and their shutdown is confirmed before the launch rejects.
@@ -300,39 +298,23 @@ entry, then retry. Version 0.2.0 never signals through its saved PID.
 ## Platform Support
 
 - macOS: Terminal.app through `osascript`, with controller-owned process groups.
-- Windows: `cmd.exe` under the preferred bundled MSVC-built x64/arm64 Job Object
-  controller, with a bundled PowerShell Job Object controller as a pre-launch
-  fallback (`pwsh` first, then Windows PowerShell 5.1).
+- Windows: `cmd.exe` under the bundled PowerShell Job Object controller (`pwsh`
+  first, then Windows PowerShell 5.1).
 - Linux: `$TERMINAL`, `gnome-terminal`, `konsole`, `xfce4-terminal`,
   `mate-terminal`, `lxterminal`, `xterm`, or `x-terminal-emulator`, with
   controller-owned process groups.
 
 ## Release Packaging
 
-Windows helper binaries are generated artifacts and are not committed. Build
-both from a Windows host with Visual Studio 2022 C++ build tools for x64 and
-ARM64. The npm command prefers `pwsh` and falls back to the built-in Windows
-PowerShell 5.1 (`powershell.exe`) only when `pwsh` is unavailable:
+The published package contains
+`native/windows/termhelm-controller.ps1`. `prepack` builds TypeScript and
+strictly verifies that this controller exists, is a regular non-symlink file,
+contains the required payload-deletion and Job Object implementation fragments,
+and is included by `package.json`.
 
-```powershell
-pnpm run build:windows-helper -- -Architecture x64
-pnpm run build:windows-helper -- -Architecture arm64
-pnpm run verify:windows-helpers
-```
-
-That build-shell fallback is separate from runtime controller fallback: a real
-MSVC build failure is reported rather than retried through another shell.
-
-`prepack` builds TypeScript and refuses to create an official release unless
-both PE helpers exist at the runtime paths under `native/win32-x64` and
-`native/win32-arm64`. The published package also contains
-`native/windows/termhelm-controller.ps1`, so an installed package can
-fall back when its native helper is unavailable or fails its self-test. CI runs
-tests on Ubuntu, macOS, and Windows, builds both helper architectures on
-Windows, exercises the native and PowerShell self-tests, downloads the helpers
-into one packaging job, and checks that the final npm archive contains both
-executables and the fallback script. The Windows host test also compiles the
-x64 helper directly with Windows PowerShell 5.1.
+CI runs tests on Ubuntu, macOS, and Windows. Windows CI exercises the controller
+self-test with both PowerShell Core and Windows PowerShell 5.1, and the package
+job checks that the final npm archive contains the controller script.
 
 Hosted CI mocks the identity-checked Terminal.app UI close. To opt into the real
 Terminal.app identity/close check on an interactive macOS host, grant Terminal

@@ -22,16 +22,12 @@
   "files": [
     "dist",
     "native/windows",
-    "native/win32-x64",
-    "native/win32-arm64",
-    "scripts/build-windows-helper.mjs",
     "scripts/verify-windows-helpers.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:windows-helper": "node scripts/build-windows-helper.mjs",
     "test": "vitest run",
     "test:types": "tsc -p tsconfig.public-api.json",
     "verify:windows-helpers": "node scripts/verify-windows-helpers.mjs",

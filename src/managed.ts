@@ -130,7 +130,7 @@ function preflightManagedBackend(): ManagedPlatformBackend {
     const windowsController = resolveWindowsControllerBackend();
     if (!windowsController) {
       throw new Error(
-        'Neither the native Windows controller nor the bundled PowerShell controller passed its ownership self-test. ' +
+        'The bundled Windows PowerShell controller did not pass its ownership self-test with an available host. ' +
         'Refusing to launch without safe process-tree ownership.'
       );
     }
@@ -478,10 +478,10 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
 
   private async initialize(): Promise<void> {
     try {
-      // Probe controller backends before starting the replacement deadline or
-      // taking label locks. A blocked native executable can consume its probe
-      // timeout, but it must not steal the time reserved for stopping the
-      // predecessor once the PowerShell fallback has been selected.
+      // Probe PowerShell hosts before starting the replacement deadline or
+      // taking label locks. A blocked host can consume its probe timeout, but
+      // it must not steal time reserved for stopping the predecessor once a
+      // controller host has been selected.
       const platformBackend = preflightManagedBackend();
       const deadline = Date.now() + this.replaceTimeoutMs;
       await withManagedLabelLocks(this.replacementIdentities, this.replaceTimeoutMs, async () => {

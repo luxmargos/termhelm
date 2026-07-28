@@ -120,7 +120,7 @@ export function launchTerminalWindows(
   const windowsController = process.platform === 'win32' ? resolveWindowsControllerBackend() : null;
   if (process.platform === 'win32' && !windowsController) {
     throw new Error(
-      'Neither the native Windows controller nor the bundled PowerShell controller passed its ownership self-test. ' +
+      'The bundled Windows PowerShell controller did not pass its ownership self-test with an available host. ' +
       'Refusing to launch without safe process-tree ownership.'
     );
   }
