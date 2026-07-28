@@ -34,7 +34,7 @@ describe('config validation', () => {
         'cwd must be a non-empty path when provided'
       );
     }
-    for (const cwd of ['package.json', 'test/__terminal-windows-missing-cwd__']) {
+    for (const cwd of ['package.json', 'test/__termhelm-missing-cwd__']) {
       expect(() => validateTerminalTarget({ title: 'api', cwd, command: 'pnpm dev' })).toThrow(
         'cwd must resolve to an existing directory'
       );
@@ -67,11 +67,11 @@ describe('config validation', () => {
   });
 
   it('resolves a config project root relative to the config file and canonicalizes it', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-config-'));
+    const directory = mkdtempSync(join(tmpdir(), 'termhelm-config-'));
     temporaryDirectories.push(directory);
     const projectDirectory = join(directory, 'project');
     mkdirSync(projectDirectory);
-    const configPath = join(directory, 'terminal-windows.json');
+    const configPath = join(directory, 'termhelm.json');
     writeFileSync(configPath, JSON.stringify({
       targets: [{ title: 'api', cwd: '.', command: 'pnpm dev' }],
       options: { label: 'dev', labelScope: { type: 'project', root: './project' } }
@@ -88,7 +88,7 @@ describe('config validation', () => {
     expect(() => validateManagedTerminalLaunchOptions({
       label: 'dev', labelScope: { type: 'project', root: './does-not-exist' }
     })).toThrow('must resolve to an existing directory');
-    const filePath = join(mkdtempSync(join(tmpdir(), 'terminal-windows-root-file-')), 'not-a-directory');
+    const filePath = join(mkdtempSync(join(tmpdir(), 'termhelm-root-file-')), 'not-a-directory');
     temporaryDirectories.push(dirname(filePath));
     writeFileSync(filePath, 'not a project root');
     expect(() => validateManagedTerminalLaunchOptions({

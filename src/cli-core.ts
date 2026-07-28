@@ -15,13 +15,13 @@ export interface CliRequest {
 }
 
 export function helpText(): string {
-  return `terminal-windows
+  return `termhelm
 
 Usage:
-  terminal-windows launch --config <path>
-  terminal-windows managed --config <path>
-  terminal-windows launch --title <title> [--cwd <cwd>] --command <command>
-  terminal-windows managed --label <label> --title <title> [--cwd <cwd>] --command <command>
+  termhelm launch --config <path>
+  termhelm managed --config <path>
+  termhelm launch --title <title> [--cwd <cwd>] --command <command>
+  termhelm managed --label <label> --title <title> [--cwd <cwd>] --command <command>
 
 Options:
   --config <path>              Read targets and options from a JSON config file.

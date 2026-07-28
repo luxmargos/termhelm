@@ -20,8 +20,8 @@ import {
   type TerminalProcessController
 } from './controller.js';
 
-const WINDOWS_HELPER_NAME = 'terminal-windows-controller.exe';
-const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'terminal-windows-controller.ps1';
+const WINDOWS_HELPER_NAME = 'termhelm-controller.exe';
+const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'termhelm-controller.ps1';
 const WINDOWS_CONTROLLER_PROBE_TIMEOUT_MS = 10_000;
 const DEFAULT_WINDOWS_POWERSHELL_EXECUTABLES = ['pwsh', 'powershell.exe'] as const;
 const legacyWindowsControllers = new Map<number, WindowsTerminalController>();
@@ -130,7 +130,7 @@ export function resolveWindowsControllerHelperPath(options: WindowsControllerRes
   const environment = options.environment ?? process.env;
   const architecture = options.architecture ?? process.arch;
   if (architecture !== 'x64' && architecture !== 'arm64') return null;
-  const configuredPath = environment.TERMINAL_WINDOWS_CONTROLLER_HELPER;
+  const configuredPath = environment.TERMHELM_CONTROLLER_HELPER;
   if (configuredPath) {
     return isAbsolute(configuredPath) && isWindowsControllerHelperFile(configuredPath, architecture)
       ? configuredPath
@@ -249,14 +249,14 @@ function createWindowsCommandFile(
   const lines = [
     '@echo off',
     target.command,
-    'set "TERMINAL_WINDOWS_EXIT_CODE=%ERRORLEVEL%"',
-    'if defined TERMINAL_WINDOWS_EXIT_MESSAGE_FILE (',
+    'set "TERMHELM_EXIT_CODE=%ERRORLEVEL%"',
+    'if defined TERMHELM_EXIT_MESSAGE_FILE (',
     '  echo.',
-    '  type "%TERMINAL_WINDOWS_EXIT_MESSAGE_FILE%"',
+    '  type "%TERMHELM_EXIT_MESSAGE_FILE%"',
     ')'
   ];
   if (options.exitAfterCommand === false) lines.push('"%ComSpec%" /d /q /v:off /k');
-  lines.push('exit /b %TERMINAL_WINDOWS_EXIT_CODE%');
+  lines.push('exit /b %TERMHELM_EXIT_CODE%');
   writeFileSync(commandFile, lines.join('\r\n'), { encoding: 'utf8', mode: 0o600 });
   return commandFile;
 }
@@ -417,7 +417,7 @@ export function launchWindowsTerminalController(
           ...target.env,
           // Display data is file-backed and consumed by TYPE. It is never
           // interpolated into the generated command file as shell code.
-          TERMINAL_WINDOWS_EXIT_MESSAGE_FILE: exitMessageFile
+          TERMHELM_EXIT_MESSAGE_FILE: exitMessageFile
         }
     });
     let controller: WindowsTerminalControllerImpl | null = null;

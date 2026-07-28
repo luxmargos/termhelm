@@ -12,7 +12,7 @@ const rawServerSockets = new WeakMap<Server, Set<Socket>>();
 function endpoint(): string {
   const id = randomUUID();
   return process.platform === 'win32'
-    ? `\\\\.\\pipe\\terminal-windows-test-${id}`
+    ? `\\\\.\\pipe\\termhelm-test-${id}`
     : join('/tmp', `.tw-${id}.sock`);
 }
 

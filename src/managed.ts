@@ -108,9 +108,9 @@ function supervisorTokenPath(sessionDirectory: string): string {
 
 function migrationError(identity: ManagedLabelIdentity, reason: 'active' | 'ambiguous'): Error {
   return new Error(
-    `Legacy terminal-windows 0.1.x state for label ${JSON.stringify(identity.label)} is ${reason}. ` +
+    `Legacy termhelm 0.1.x state for label ${JSON.stringify(identity.label)} is ${reason}. ` +
     'Stop the 0.1.x supervisor manually and remove its legacy record before retrying. ' +
-    'terminal-windows 0.2.0 will not signal or kill a process through a legacy PID.'
+    'termhelm 0.2.0 will not signal or kill a process through a legacy PID.'
   );
 }
 
@@ -224,7 +224,7 @@ async function replaceExistingSession(
   if (legacy.status === 'migration-required') throw migrationError(identity, legacy.reason);
   if (legacy.status === 'inactive' && !removeInactiveLegacySupervisorRecord(identity.label)) {
     throw new Error(
-      `Legacy terminal-windows 0.1.x state for label ${JSON.stringify(identity.label)} changed while being inspected. ` +
+      `Legacy termhelm 0.1.x state for label ${JSON.stringify(identity.label)} changed while being inspected. ` +
       'Refusing replacement because ownership is uncertain.'
     );
   }

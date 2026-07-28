@@ -17,7 +17,7 @@ import { launchWindowsTerminalController } from '../src/platforms/windows.js';
 const temporaryDirectories: string[] = [];
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-backend-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'termhelm-backend-test-'));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -40,7 +40,7 @@ describe('Windows controller backend launch boundary', () => {
       unref: vi.fn()
     });
     const directory = temporaryDirectory();
-    const helperPath = join(directory, 'terminal-windows-controller.exe');
+    const helperPath = join(directory, 'termhelm-controller.exe');
     const controller = launchWindowsTerminalController(
       { title: 'display only', cwd: directory, command: 'ver >nul' },
       { exitAfterCommand: true },
@@ -63,7 +63,7 @@ describe('Windows controller backend launch boundary', () => {
       unref: vi.fn()
     });
     const directory = temporaryDirectory();
-    const scriptPath = join(directory, 'terminal-windows-controller.ps1');
+    const scriptPath = join(directory, 'termhelm-controller.ps1');
     const controller = launchWindowsTerminalController(
       {
         title: '-SelfTest display only',

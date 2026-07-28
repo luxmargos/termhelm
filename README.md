@@ -1,14 +1,39 @@
-# @luxmargos/terminal-windows
+# @luxmargos/termhelm
 
-Open commands in native terminal windows from Node.js or a CLI. Managed mode
-owns each launched process tree, replaces earlier sessions by a required logical
-label, and waits for acknowledged shutdown. Window titles are display-only and
-are never used to choose a process or window to terminate.
+**TermHelm** launches commands in visible windows of the user's native
+terminal application on macOS, Windows, and Linux. Use it from Node.js or its
+CLI when a command should run in a real desktop terminal instead of a hidden
+child process.
+
+## What the name means
+
+**TermHelm** combines “terminal” with “helm”: it opens graphical terminal
+windows and gives the caller a reliable way to steer their lifecycle. The name
+is platform-neutral; macOS, Windows, and Linux are all first-class targets.
+
+This package is not a terminal emulator, shell, or pseudoterminal. It delegates
+to an installed terminal application, so Linux requires a supported graphical
+terminal emulator and an active desktop/display session. It is not intended for
+headless servers or CI jobs that have no graphical terminal available.
+
+## How it works
+
+1. The CLI or library receives one or more commands, with an optional working
+   directory and environment variables.
+2. The package selects the native platform backend: Terminal.app on macOS,
+   `cmd.exe` with a Job Object controller on Windows, or an installed graphical
+   terminal emulator on Linux.
+3. Each command opens in a visible terminal window or tab. An omitted `cwd`
+   defaults to the current working directory.
+4. Plain mode launches the targets and returns a closeable session. Managed mode
+   additionally owns each launched process tree, replaces an earlier session by
+   its required logical label, and waits for acknowledged shutdown. Window
+   titles remain display-only and are never used as process identity.
 
 ## Install
 
 ```sh
-pnpm add @luxmargos/terminal-windows
+pnpm add @luxmargos/termhelm
 ```
 
 ## CLI
@@ -16,19 +41,19 @@ pnpm add @luxmargos/terminal-windows
 Run a JSON config in plain launch mode:
 
 ```sh
-terminal-windows launch --config terminal-windows.json
+termhelm launch --config termhelm.json
 ```
 
 Managed config mode requires `options.label` in the config:
 
 ```sh
-terminal-windows managed --config terminal-windows.json
+termhelm managed --config termhelm.json
 ```
 
 Inline managed mode requires `--label`:
 
 ```sh
-terminal-windows managed \
+termhelm managed \
   --label local-dev \
   --title api \
   --command "pnpm run dev"
@@ -42,7 +67,7 @@ project scope. `--project-root` is optional in inline mode; when omitted, the
 resolved `--cwd` is used, including its current-working-directory default:
 
 ```sh
-terminal-windows managed \
+termhelm managed \
   --label local-dev \
   --label-scope project \
   --title api \
@@ -52,7 +77,7 @@ terminal-windows managed \
 An explicit `--project-root` takes precedence over `--cwd`. It must resolve to
 an existing directory.
 
-Use `terminal-windows --help` for all inline target flags.
+Use `termhelm --help` for all inline target flags.
 
 ## Config
 
@@ -120,7 +145,7 @@ import {
   launchManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
-} from '@luxmargos/terminal-windows';
+} from '@luxmargos/termhelm';
 
 launchTerminalWindows([
   {
@@ -223,6 +248,9 @@ only a newer locked contender may prune it.
 
 ## Migrating from 0.1.x
 
+The package is now named `@luxmargos/termhelm`. Replace the previous dependency
+and import path with this name, and invoke the CLI as `termhelm`.
+
 Version `0.2.0` intentionally removes the implicit `"terminal-windows"` managed
 label. Pass `{ label: "..." }` to every managed library call, add
 `options.label` to managed config files, or use `--label` for inline managed CLI
@@ -264,7 +292,7 @@ MSVC build failure is reported rather than retried through another shell.
 `prepack` builds TypeScript and refuses to create an official release unless
 both PE helpers exist at the runtime paths under `native/win32-x64` and
 `native/win32-arm64`. The published package also contains
-`native/windows/terminal-windows-controller.ps1`, so an installed package can
+`native/windows/termhelm-controller.ps1`, so an installed package can
 fall back when its native helper is unavailable or fails its self-test. CI runs
 tests on Ubuntu, macOS, and Windows, builds both helper architectures on
 Windows, exercises the native and PowerShell self-tests, downloads the helpers
@@ -277,7 +305,7 @@ Terminal.app identity/close check on an interactive macOS host, grant Terminal
 automation permission and run:
 
 ```sh
-TERMINAL_WINDOWS_MANUAL_MACOS=1 pnpm exec vitest run test/macos-terminal.manual.test.ts
+TERMHELM_MANUAL_MACOS=1 pnpm exec vitest run test/macos-terminal.manual.test.ts
 ```
 
 ## License

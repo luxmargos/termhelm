@@ -43,17 +43,17 @@ jobs:
       - name: Self-test native Windows controller
         if: runner.os == 'Windows'
         shell: cmd
-        run: native\win32-x64\terminal-windows-controller.exe --self-test
+        run: native\win32-x64\termhelm-controller.exe --self-test
 
       - name: Self-test PowerShell Core Windows controller
         if: runner.os == 'Windows'
         shell: cmd
-        run: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\terminal-windows-controller.ps1 -SelfTest
+        run: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\termhelm-controller.ps1 -SelfTest
 
       - name: Self-test Windows PowerShell 5.1 controller
         if: runner.os == 'Windows'
         shell: cmd
-        run: powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\terminal-windows-controller.ps1 -SelfTest
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native\windows\termhelm-controller.ps1 -SelfTest
 
       - name: Test
         run: pnpm test
@@ -101,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-helper-${{ matrix.architecture }}
-          path: native/win32-${{ matrix.architecture }}/terminal-windows-controller.exe
+          path: native/win32-${{ matrix.architecture }}/termhelm-controller.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -154,6 +154,6 @@ jobs:
           package_path="$(find package-output -maxdepth 1 -name '*.tgz' -print -quit)"
           test -n "$package_path"
           tar -tzf "$package_path" > package-contents.txt
-          grep -Fxq package/native/win32-x64/terminal-windows-controller.exe package-contents.txt
-          grep -Fxq package/native/win32-arm64/terminal-windows-controller.exe package-contents.txt
-          grep -Fxq package/native/windows/terminal-windows-controller.ps1 package-contents.txt
+          grep -Fxq package/native/win32-x64/termhelm-controller.exe package-contents.txt
+          grep -Fxq package/native/win32-arm64/termhelm-controller.exe package-contents.txt
+          grep -Fxq package/native/windows/termhelm-controller.ps1 package-contents.txt

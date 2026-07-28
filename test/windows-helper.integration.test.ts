@@ -11,7 +11,7 @@ const temporaryDirectories: string[] = [];
 const unrelatedProcesses: ChildProcess[] = [];
 
 function temporaryDirectory(): string {
-  const path = mkdtempSync(join(tmpdir(), 'terminal-windows-native-test-'));
+  const path = mkdtempSync(join(tmpdir(), 'termhelm-native-test-'));
   temporaryDirectories.push(path);
   return path;
 }
@@ -58,7 +58,7 @@ function payloadTreeScript(directory: string): string {
     "const { spawn } = require('node:child_process');",
     'const level = Number(process.argv[2] || 0);',
     `appendFileSync(${JSON.stringify(startedPath)}, level + '\\n');`,
-    `appendFileSync(${JSON.stringify(valuesPath)}, JSON.stringify({ level, value: process.env.TERMINAL_WINDOWS_PAYLOAD_TEST, emptyPresent: Object.prototype.hasOwnProperty.call(process.env, 'TERMINAL_WINDOWS_EMPTY_TEST'), emptyValue: process.env.TERMINAL_WINDOWS_EMPTY_TEST }) + '\\n');`,
+    `appendFileSync(${JSON.stringify(valuesPath)}, JSON.stringify({ level, value: process.env.TERMHELM_PAYLOAD_TEST, emptyPresent: Object.prototype.hasOwnProperty.call(process.env, 'TERMHELM_EMPTY_TEST'), emptyValue: process.env.TERMHELM_EMPTY_TEST }) + '\\n');`,
     `process.on('SIGBREAK', () => { appendFileSync(${JSON.stringify(stoppedPath)}, level + '\\n'); process.exit(0); });`,
     `if (level < 2) spawn(process.execPath, [${JSON.stringify(scriptPath)}, String(level + 1)], { stdio: 'ignore', windowsHide: true });`,
     'setInterval(() => {}, 1000);'
@@ -271,7 +271,7 @@ describe.skipIf(process.platform !== 'win32')('MSVC Windows Job Object controlle
 });
 
 describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object controller integration', () => {
-  const scriptPath = join(process.cwd(), 'native', 'windows', 'terminal-windows-controller.ps1');
+  const scriptPath = join(process.cwd(), 'native', 'windows', 'termhelm-controller.ps1');
   const backends = [
     { name: 'PowerShell Core', executable: 'pwsh' },
     { name: 'Windows PowerShell 5.1', executable: 'powershell.exe' }
@@ -295,8 +295,8 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
             cwd: directory,
             command: `${windowsQuote(process.execPath)} ${windowsQuote(commandScriptPath)} 0`,
             env: {
-              TERMINAL_WINDOWS_PAYLOAD_TEST: expectedValue,
-              TERMINAL_WINDOWS_EMPTY_TEST: ''
+              TERMHELM_PAYLOAD_TEST: expectedValue,
+              TERMHELM_EMPTY_TEST: ''
             }
           },
           { exitAfterCommand: true },

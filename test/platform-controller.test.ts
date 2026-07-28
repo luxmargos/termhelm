@@ -33,7 +33,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-controller-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'termhelm-controller-test-'));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -135,7 +135,7 @@ describe('POSIX managed wrapper', () => {
     expect(command).not.toContain('node server.js');
     expect(command).not.toContain('display only');
     expect(command.slice(command.indexOf('runner_status=$?'))).not.toContain(control.failedPath);
-    const runnerFunctionName = `terminal_windows_runner_${control.id.replace(/-/g, '_')}`;
+    const runnerFunctionName = `termhelm_runner_${control.id.replace(/-/g, '_')}`;
     expect(command).toContain(`${runnerFunctionName}() {`);
     expect(command).toContain(`fg '%?${runnerFunctionName}'`);
     expect(command).not.toContain('fg %1');
@@ -206,7 +206,7 @@ describe('platform identity safety', () => {
 
   it('fails closed when a configured Windows helper is missing', () => {
     expect(resolveWindowsControllerHelperPath({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: join(temporaryDirectory(), 'missing.exe') },
+      environment: { TERMHELM_CONTROLLER_HELPER: join(temporaryDirectory(), 'missing.exe') },
       architecture: 'x64',
       moduleDirectory: temporaryDirectory()
     })).toBeNull();
@@ -216,7 +216,7 @@ describe('platform identity safety', () => {
     const helperPath = join(temporaryDirectory(), 'controller.exe');
     writeFakeWindowsControllerHelper(helperPath);
     expect(resolveWindowsControllerHelperPath({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: helperPath },
+      environment: { TERMHELM_CONTROLLER_HELPER: helperPath },
       architecture: 'x64',
       moduleDirectory: temporaryDirectory()
     })).toBe(helperPath);
@@ -226,7 +226,7 @@ describe('platform identity safety', () => {
     const malformedHelper = join(temporaryDirectory(), 'malformed.exe');
     writeFileSync(malformedHelper, 'not a PE executable');
     expect(resolveWindowsControllerHelperPath({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: malformedHelper },
+      environment: { TERMHELM_CONTROLLER_HELPER: malformedHelper },
       architecture: 'x64',
       moduleDirectory: temporaryDirectory()
     })).toBeNull();
@@ -234,12 +234,12 @@ describe('platform identity safety', () => {
     const arm64Helper = join(temporaryDirectory(), 'arm64-controller.exe');
     writeFakeWindowsControllerHelper(arm64Helper, 0xaa64);
     expect(resolveWindowsControllerHelperPath({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: arm64Helper },
+      environment: { TERMHELM_CONTROLLER_HELPER: arm64Helper },
       architecture: 'x64',
       moduleDirectory: temporaryDirectory()
     })).toBeNull();
     expect(resolveWindowsControllerHelperPath({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: arm64Helper },
+      environment: { TERMHELM_CONTROLLER_HELPER: arm64Helper },
       architecture: 'ia32',
       moduleDirectory: temporaryDirectory()
     })).toBeNull();
@@ -249,7 +249,7 @@ describe('platform identity safety', () => {
     const root = temporaryDirectory();
     const moduleDirectory = join(root, 'dist', 'platforms');
     const helperDirectory = join(root, 'native', 'win32-x64');
-    const helperPath = join(helperDirectory, 'terminal-windows-controller.exe');
+    const helperPath = join(helperDirectory, 'termhelm-controller.exe');
     mkdirSync(moduleDirectory, { recursive: true });
     mkdirSync(helperDirectory, { recursive: true });
     writeFakeWindowsControllerHelper(helperPath);
@@ -264,7 +264,7 @@ describe('platform identity safety', () => {
     const root = temporaryDirectory();
     const moduleDirectory = join(root, 'dist', 'platforms');
     const scriptDirectory = join(root, 'native', 'windows');
-    const scriptPath = join(scriptDirectory, 'terminal-windows-controller.ps1');
+    const scriptPath = join(scriptDirectory, 'termhelm-controller.ps1');
     mkdirSync(moduleDirectory, { recursive: true });
     mkdirSync(scriptDirectory, { recursive: true });
     writePowerShellFallback(scriptPath);
@@ -293,9 +293,9 @@ describe('platform identity safety', () => {
     const moduleDirectory = join(packageRoot, 'dist', 'platforms');
     const ancestorNativeDirectory = join(workspace, 'native');
     const helperDirectory = join(ancestorNativeDirectory, 'win32-x64');
-    const helperPath = join(helperDirectory, 'terminal-windows-controller.exe');
+    const helperPath = join(helperDirectory, 'termhelm-controller.exe');
     const scriptDirectory = join(ancestorNativeDirectory, 'windows');
-    const scriptPath = join(scriptDirectory, 'terminal-windows-controller.ps1');
+    const scriptPath = join(scriptDirectory, 'termhelm-controller.ps1');
     mkdirSync(moduleDirectory, { recursive: true });
     mkdirSync(helperDirectory, { recursive: true });
     mkdirSync(scriptDirectory, { recursive: true });
@@ -323,9 +323,9 @@ describe('platform identity safety', () => {
     const packageRoot = join(workspace, 'package');
     const moduleDirectory = join(packageRoot, 'dist', 'platforms');
     const helperDirectory = join(packageRoot, 'native', 'win32-x64');
-    const helperPath = join(helperDirectory, 'terminal-windows-controller.exe');
+    const helperPath = join(helperDirectory, 'termhelm-controller.exe');
     const scriptDirectory = join(packageRoot, 'native', 'windows');
-    const scriptPath = join(scriptDirectory, 'terminal-windows-controller.ps1');
+    const scriptPath = join(scriptDirectory, 'termhelm-controller.ps1');
     const externalHelperPath = join(workspace, 'external-controller.exe');
     const externalScriptPath = join(workspace, 'external-controller.ps1');
     mkdirSync(moduleDirectory, { recursive: true });
@@ -355,13 +355,13 @@ describe('platform identity safety', () => {
   it('prefers a healthy native Windows controller over PowerShell', () => {
     const root = temporaryDirectory();
     const helperPath = join(root, 'controller.exe');
-    const scriptPath = join(root, 'terminal-windows-controller.ps1');
+    const scriptPath = join(root, 'termhelm-controller.ps1');
     writeFakeWindowsControllerHelper(helperPath);
     writePowerShellFallback(scriptPath);
     const probe = vi.fn(() => true);
 
     expect(resolveWindowsControllerBackend({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: helperPath },
+      environment: { TERMHELM_CONTROLLER_HELPER: helperPath },
       architecture: 'x64',
       moduleDirectory: root,
       powerShellExecutables: ['pwsh', 'powershell.exe'],
@@ -377,13 +377,13 @@ describe('platform identity safety', () => {
     nativeState => {
       const root = temporaryDirectory();
       const helperPath = join(root, 'controller.exe');
-      const scriptPath = join(root, 'terminal-windows-controller.ps1');
+      const scriptPath = join(root, 'termhelm-controller.ps1');
       if (nativeState === 'corrupt') writeFileSync(helperPath, 'not a PE executable');
       writePowerShellFallback(scriptPath);
       const probe = vi.fn((executable: string) => executable === 'pwsh');
 
       expect(resolveWindowsControllerBackend({
-        environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: helperPath },
+        environment: { TERMHELM_CONTROLLER_HELPER: helperPath },
         architecture: 'x64',
         moduleDirectory: root,
         powerShellExecutables: ['pwsh', 'powershell.exe'],
@@ -400,13 +400,13 @@ describe('platform identity safety', () => {
   it('falls through failed native and pwsh probes to Windows PowerShell', () => {
     const root = temporaryDirectory();
     const helperPath = join(root, 'controller.exe');
-    const scriptPath = join(root, 'terminal-windows-controller.ps1');
+    const scriptPath = join(root, 'termhelm-controller.ps1');
     writeFakeWindowsControllerHelper(helperPath);
     writePowerShellFallback(scriptPath);
     const probe = vi.fn((executable: string) => executable === 'powershell.exe');
 
     expect(resolveWindowsControllerBackend({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: helperPath },
+      environment: { TERMHELM_CONTROLLER_HELPER: helperPath },
       architecture: 'x64',
       moduleDirectory: root,
       powerShellExecutables: ['pwsh', 'powershell.exe'],
@@ -423,13 +423,13 @@ describe('platform identity safety', () => {
   it('returns no Windows backend when every pre-launch probe fails', () => {
     const root = temporaryDirectory();
     const helperPath = join(root, 'controller.exe');
-    const scriptPath = join(root, 'terminal-windows-controller.ps1');
+    const scriptPath = join(root, 'termhelm-controller.ps1');
     writeFakeWindowsControllerHelper(helperPath);
     writePowerShellFallback(scriptPath);
     const probe = vi.fn(() => false);
 
     expect(resolveWindowsControllerBackend({
-      environment: { TERMINAL_WINDOWS_CONTROLLER_HELPER: helperPath },
+      environment: { TERMHELM_CONTROLLER_HELPER: helperPath },
       architecture: 'x64',
       moduleDirectory: root,
       powerShellExecutables: ['pwsh', 'powershell.exe'],
@@ -444,8 +444,8 @@ describe('platform identity safety', () => {
   });
 
   it('implements Windows ownership with retained handles and a Job Object', () => {
-    const helperSource = readFileSync('native/windows/terminal-windows-controller.cpp', 'utf8');
-    const fallbackSource = readFileSync('native/windows/terminal-windows-controller.ps1', 'utf8');
+    const helperSource = readFileSync('native/windows/termhelm-controller.cpp', 'utf8');
+    const fallbackSource = readFileSync('native/windows/termhelm-controller.ps1', 'utf8');
     const windowsSource = readFileSync('src/platforms/windows.ts', 'utf8');
     const buildSource = readFileSync('native/windows/build.ps1', 'utf8');
     expect(helperSource).toContain('CreateJobObject');
@@ -472,8 +472,8 @@ describe('platform identity safety', () => {
       'writeTerminalStateMarker'
     );
     expect(windowsSource).toContain('controller?.requestClose()');
-    expect(windowsSource).toContain(`'  type "%TERMINAL_WINDOWS_EXIT_MESSAGE_FILE%"'`);
-    expect(windowsSource).toContain('TERMINAL_WINDOWS_EXIT_MESSAGE_FILE: exitMessageFile');
+    expect(windowsSource).toContain(`'  type "%TERMHELM_EXIT_MESSAGE_FILE%"'`);
+    expect(windowsSource).toContain('TERMHELM_EXIT_MESSAGE_FILE: exitMessageFile');
     expect(windowsSource).toContain('createWindowsExitMessageFile(target.exitMessage, control)');
     expect(windowsSource).not.toContain('windowsEchoEscape(target.exitMessage)');
     expect(buildSource).toContain('cl.exe');

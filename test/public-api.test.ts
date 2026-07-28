@@ -25,9 +25,9 @@ const platformActivity = vi.hoisted(() => {
     resolveLinuxLauncher: vi.fn(() => () => ({ command: 'mock-terminal', args: [] })),
     resolveWindowsControllerBackend: vi.fn(() => ({
       kind: 'native' as const,
-      helperPath: 'C:\\mock\\terminal-windows-controller.exe'
+      helperPath: 'C:\\mock\\termhelm-controller.exe'
     })),
-    resolveWindowsControllerHelperPath: vi.fn(() => 'C:\\mock\\terminal-windows-controller.exe'),
+    resolveWindowsControllerHelperPath: vi.fn(() => 'C:\\mock\\termhelm-controller.exe'),
     launchLinuxTerminalController: vi.fn(launchError),
     launchMacTerminalController: vi.fn(launchError),
     launchWindowsTerminalController: vi.fn(launchError)
@@ -148,9 +148,9 @@ describe('managed public API boundary', () => {
   });
 
   it('resolves config project roots from the config file and inline roots from cwd', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-public-config-'));
+    const directory = mkdtempSync(join(tmpdir(), 'termhelm-public-config-'));
     temporaryDirectories.push(directory);
-    const configPath = join(directory, 'terminal-windows.json');
+    const configPath = join(directory, 'termhelm.json');
     writeFileSync(configPath, JSON.stringify({
       targets: [{ title: 'api', cwd: '.', command: 'mock command' }],
       options: { label: 'dev', labelScope: { type: 'project', root: '.' } }

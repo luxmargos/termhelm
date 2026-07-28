@@ -47,7 +47,7 @@ export async function runTerminalWindowsCli(
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    output.error(`terminal-windows: ${message}`);
+    output.error(`termhelm: ${message}`);
     process.exitCode = 1;
     return 1;
   }

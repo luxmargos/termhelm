@@ -26,7 +26,7 @@ const temporaryDirectories: string[] = [];
 const childProcesses: ChildProcess[] = [];
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'terminal-windows-sidecar-test-'));
+  const directory = mkdtempSync(join(tmpdir(), 'termhelm-sidecar-test-'));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -191,7 +191,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
 
     await waitFor(() => existsSync(control.stoppedPath));
     expect(await waitForExit(child)).toBe(0);
-    expect(stderr()).not.toContain('terminal-windows POSIX controller:');
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
     expect(existsSync(control.readyPath)).toBe(true);
     expect(existsSync(control.stoppingPath)).toBe(false);
     expect(existsSync(control.forcedPath)).toBe(false);
@@ -222,7 +222,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     rmSync(control.targetTokenPath);
     await waitFor(() => existsSync(control.stoppedPath));
     await waitForExit(child);
-    expect(stderr()).not.toContain('terminal-windows POSIX controller:');
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
     expect(tree.termObservedPaths.every(path => existsSync(path))).toBe(true);
     expect(ownedPids.every(pid => !processExists(pid))).toBe(true);
     expect(existsSync(control.forcedPath)).toBe(false);

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { launchMacTerminalController } from '../src/platforms/macos.js';
 
 const manualEnabled = process.platform === 'darwin'
-  && process.env.TERMINAL_WINDOWS_MANUAL_MACOS === '1';
+  && process.env.TERMHELM_MANUAL_MACOS === '1';
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -16,11 +16,11 @@ afterEach(() => {
 
 describe.skipIf(!manualEnabled)('manual Terminal.app identity verification', () => {
   it('captures a real window/TTY pair and closes that exact tab', () => {
-    const stateDirectory = mkdtempSync(join(tmpdir(), 'terminal-windows-macos-manual-'));
+    const stateDirectory = mkdtempSync(join(tmpdir(), 'termhelm-macos-manual-'));
     temporaryDirectories.push(stateDirectory);
     const controller = launchMacTerminalController(
       {
-        title: 'terminal-windows manual identity check',
+        title: 'termhelm manual identity check',
         cwd: process.cwd(),
         command: 'sleep 30'
       },

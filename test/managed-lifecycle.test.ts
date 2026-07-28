@@ -97,9 +97,9 @@ vi.mock('../src/platforms/windows.js', () => ({
   launchWindowsTerminalController: fakePlatform.launch,
   resolveWindowsControllerBackend: () => ({
     kind: 'native',
-    helperPath: 'C:\\fake\\terminal-windows-controller.exe'
+    helperPath: 'C:\\fake\\termhelm-controller.exe'
   }),
-  resolveWindowsControllerHelperPath: () => 'C:\\fake\\terminal-windows-controller.exe'
+  resolveWindowsControllerHelperPath: () => 'C:\\fake\\termhelm-controller.exe'
 }));
 
 import { launchManagedTerminalWindows, startManagedTerminalWindows } from '../src/managed.js';

@@ -141,7 +141,7 @@ export function createTerminalControlPaths(options: TerminalControllerOptions = 
   const sessionId = validateControllerId(options.sessionId ?? randomUUID(), 'session ID');
   const root = options.stateDirectory ?? tmpdir();
   const ownsDirectory = options.controlDirectory === undefined;
-  const directory = options.controlDirectory ?? join(root, `terminal-windows-target-${id}`);
+  const directory = options.controlDirectory ?? join(root, `termhelm-target-${id}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   mkdirSync(directory, { recursive: !ownsDirectory, mode: 0o700 });
   const markerName = (state: string) => ownsDirectory ? state : `${id}.${state}.json`;

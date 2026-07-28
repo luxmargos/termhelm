@@ -1,7 +1,7 @@
 {
-  "name": "@luxmargos/terminal-windows",
+  "name": "@luxmargos/termhelm",
   "version": "0.2.0",
-  "description": "Open commands in native terminal windows from Node.js or a CLI.",
+  "description": "Launch and manage commands in native desktop terminal windows on macOS, Windows, and Linux.",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -9,7 +9,7 @@
     "node": ">=20.19.0"
   },
   "bin": {
-    "terminal-windows": "./dist/cli.js"
+    "termhelm": "./dist/cli.js"
   },
   "exports": {
     ".": {

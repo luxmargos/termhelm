@@ -3,8 +3,8 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const helperName = 'terminal-windows-controller.exe';
-const powerShellControllerRelativePath = 'native/windows/terminal-windows-controller.ps1';
+const helperName = 'termhelm-controller.exe';
+const powerShellControllerRelativePath = 'native/windows/termhelm-controller.ps1';
 const supportedArchitectures = ['x64', 'arm64'];
 const expectedPeMachine = { x64: 0x8664, arm64: 0xaa64 };
 
@@ -130,7 +130,7 @@ async function main() {
   }
 
   if (errors.length > 0) {
-    for (const error of errors) console.error(`terminal-windows package validation: ${error}`);
+    for (const error of errors) console.error(`termhelm package validation: ${error}`);
     process.exitCode = 1;
     return;
   }
@@ -139,6 +139,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(`terminal-windows package validation: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`termhelm package validation: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

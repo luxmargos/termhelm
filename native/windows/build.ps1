@@ -7,9 +7,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $nativeRoot = Split-Path -Parent $PSScriptRoot
 $outputDirectory = Join-Path $nativeRoot "win32-$Architecture"
-$outputPath = Join-Path $outputDirectory 'terminal-windows-controller.exe'
-$objectPath = Join-Path $outputDirectory 'terminal-windows-controller.obj'
-$sourcePath = Join-Path $PSScriptRoot 'terminal-windows-controller.cpp'
+$outputPath = Join-Path $outputDirectory 'termhelm-controller.exe'
+$objectPath = Join-Path $outputDirectory 'termhelm-controller.obj'
+$sourcePath = Join-Path $PSScriptRoot 'termhelm-controller.cpp'
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {

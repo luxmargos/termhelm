@@ -1000,7 +1000,7 @@ namespace TerminalWindows
                 }
 
                 Environment.SetEnvironmentVariable(
-                    "TERMINAL_WINDOWS_COMMAND_FILE",
+                    "TERMHELM_COMMAND_FILE",
                     commandFile,
                     EnvironmentVariableTarget.Process);
 
@@ -1034,7 +1034,7 @@ namespace TerminalWindows
                 StringBuilder commandLine = new StringBuilder(
                     QuoteCreateProcessArgument(comspec) +
                     " /d /v:off /c call " +
-                    "\"%TERMINAL_WINDOWS_COMMAND_FILE%\"");
+                    "\"%TERMHELM_COMMAND_FILE%\"");
                 uint flags =
                     CREATE_SUSPENDED |
                     CREATE_NEW_CONSOLE |
@@ -1275,7 +1275,7 @@ try {
     )
   }
   [TerminalWindows.PowerShellController]::SetProcessEnvironmentVariable(
-    'TERMINAL_WINDOWS_EXIT_MESSAGE_FILE',
+    'TERMHELM_EXIT_MESSAGE_FILE',
     [string] $payload.exitMessageFile
   )
 

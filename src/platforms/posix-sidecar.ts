@@ -664,7 +664,7 @@ async function main(): Promise<void> {
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
 if (invokedPath === resolve(fileURLToPath(import.meta.url))) {
   main().catch(error => {
-    console.error(`terminal-windows POSIX controller: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`termhelm POSIX controller: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
 }

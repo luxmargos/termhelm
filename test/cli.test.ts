@@ -25,6 +25,6 @@ describe('CLI entry point', () => {
     expect(status).toBe(1);
     expect(process.exitCode).toBe(1);
     expect(stdout).toEqual([]);
-    expect(stderr).toEqual([`terminal-windows: ${MANAGED_TERMINAL_LABEL_ERROR}`]);
+    expect(stderr).toEqual([`termhelm: ${MANAGED_TERMINAL_LABEL_ERROR}`]);
   });
 });

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const fallbackPath = 'native/windows/terminal-windows-controller.ps1';
+const fallbackPath = 'native/windows/termhelm-controller.ps1';
 
 describe('Windows controller package contents', () => {
   it('packages the PowerShell runtime fallback', () => {
@@ -25,7 +25,7 @@ describe('Windows controller package contents', () => {
     expect(packageJson.scripts?.prepack).toContain('verify:windows-helpers');
     expect(verifier).toContain("const supportedArchitectures = ['x64', 'arm64']");
     expect(verifier).toContain('Missing ${architecture} Windows controller helper');
-    expect(verifier).toContain("const powerShellControllerRelativePath = 'native/windows/terminal-windows-controller.ps1'");
+    expect(verifier).toContain("const powerShellControllerRelativePath = 'native/windows/termhelm-controller.ps1'");
     expect(verifier).toContain('validatePowerShellController()');
     expect(verifier).toContain("'[string] $PayloadPath'");
     expect(verifier).toContain("'ConvertFrom-Json -ErrorAction Stop'");

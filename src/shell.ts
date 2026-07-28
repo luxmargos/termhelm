@@ -47,7 +47,7 @@ function buildManagedPosixSidecarCommand(
 ): string {
   const sidecar = options.posixSidecar;
   if (!sidecar) throw new Error('Managed POSIX terminal mode requires its bundled controller sidecar.');
-  const runnerFunctionName = `terminal_windows_runner_${control.id.replace(/[^A-Za-z0-9_]/g, '_')}`;
+  const runnerFunctionName = `termhelm_runner_${control.id.replace(/[^A-Za-z0-9_]/g, '_')}`;
   const failedCommands = buildPosixMarkerCommands(
     'failed_tmp',
     control.failedPath,

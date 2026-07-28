@@ -43,7 +43,7 @@ describe('managed terminal registry', () => {
   let storage: ManagedManagerStorageOptions;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), 'terminal-windows-manager-test-'));
+    sandbox = mkdtempSync(join(tmpdir(), 'termhelm-manager-test-'));
     storage = {
       runtimeDirectory: join(sandbox, 'runtime'),
       legacyRegistryDirectory: join(sandbox, 'legacy'),
@@ -108,7 +108,7 @@ describe('managed terminal registry', () => {
     const paths = [root, join(root, 'records'), managedSessionRecordPath(identity, storage)];
     const script = String.raw`
 $ErrorActionPreference = 'Stop'
-$paths = @([Environment]::GetEnvironmentVariable('TERMINAL_WINDOWS_TEST_ACL_PATHS') | ConvertFrom-Json)
+$paths = @([Environment]::GetEnvironmentVariable('TERMHELM_TEST_ACL_PATHS') | ConvertFrom-Json)
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $system = 'S-1-5-18'
 foreach ($path in $paths) {
@@ -139,7 +139,7 @@ foreach ($path in $paths) {
     ], {
       encoding: 'utf8',
       windowsHide: true,
-      env: { ...process.env, TERMINAL_WINDOWS_TEST_ACL_PATHS: JSON.stringify(paths) }
+      env: { ...process.env, TERMHELM_TEST_ACL_PATHS: JSON.stringify(paths) }
     });
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);

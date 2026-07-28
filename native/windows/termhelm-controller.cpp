@@ -590,7 +590,7 @@ int wmain(int argc, wchar_t** argv) {
       Fail("Supervisor shutdown token disappeared before launch.");
     }
 
-    if (!SetEnvironmentVariableW(L"TERMINAL_WINDOWS_COMMAND_FILE",
+    if (!SetEnvironmentVariableW(L"TERMHELM_COMMAND_FILE",
                                  command_file.c_str())) {
       FailWindows("Unable to set the structural command-file environment variable");
     }
@@ -613,7 +613,7 @@ int wmain(int argc, wchar_t** argv) {
     PROCESS_INFORMATION child{};
     std::wstring command_line = QuoteCreateProcessArgument(comspec) +
                                 L" /d /v:off /c call "
-                                L"\"%TERMINAL_WINDOWS_COMMAND_FILE%\"";
+                                L"\"%TERMHELM_COMMAND_FILE%\"";
     std::vector<wchar_t> mutable_command_line(command_line.begin(),
                                               command_line.end());
     mutable_command_line.push_back(L'\0');

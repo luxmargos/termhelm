@@ -29,7 +29,7 @@ const AUTHENTICATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
 const GENERATION_PATTERN = /^[0-9]{20,48}$/;
 const GENERATION_TICKET_WIDTH = 20;
 const LABEL_ERROR = 'Managed terminal options.label must be a non-empty label without surrounding whitespace.';
-const WINDOWS_RUNTIME_ACL_ENV = 'TERMINAL_WINDOWS_RUNTIME_ACL_PATH';
+const WINDOWS_RUNTIME_ACL_ENV = 'TERMHELM_RUNTIME_ACL_PATH';
 const securedWindowsRuntimeRoots = new Map<string, string>();
 
 const WINDOWS_RUNTIME_ACL_SCRIPT = String.raw`
@@ -186,7 +186,7 @@ function canonicalizeScope(scope: ManagedLabelScope | undefined, baseDirectory: 
 function identityKey(label: string, scope: ManagedLabelScope): string {
   const root = scope.type === 'project' ? scope.root : '';
   return createHash('sha256')
-    .update(`terminal-windows\0v${REGISTRY_VERSION}\0${scope.type}\0${root}\0${label}`, 'utf8')
+    .update(`termhelm\0v${REGISTRY_VERSION}\0${scope.type}\0${root}\0${label}`, 'utf8')
     .digest('hex');
 }
 
@@ -219,7 +219,7 @@ function defaultUserRuntimeDirectory(): string {
   if (typeof process.getuid === 'function') {
     // Keep the user-owned directory directly below the root-owned sticky
     // temporary directory. No untrusted user can rename this entry.
-    return join('/tmp', `terminal-windows-${process.getuid()}-v${REGISTRY_VERSION}`);
+    return join('/tmp', `termhelm-${process.getuid()}-v${REGISTRY_VERSION}`);
   }
   let userFingerprint: string;
   try {
@@ -229,7 +229,7 @@ function defaultUserRuntimeDirectory(): string {
     userFingerprint = tmpdir();
   }
   const userKey = createHash('sha256').update(userFingerprint, 'utf8').digest('hex').slice(0, 16);
-  return join(tmpdir(), `terminal-windows-${userKey}-v${REGISTRY_VERSION}`);
+  return join(tmpdir(), `termhelm-${userKey}-v${REGISTRY_VERSION}`);
 }
 
 export function managedTerminalRuntimeDirectory(options: ManagedManagerStorageOptions = {}): string {
@@ -400,7 +400,7 @@ export function managedControlEndpoint(
   const root = managedTerminalRuntimeDirectory(options);
   if (process.platform === 'win32') {
     const userKey = createHash('sha256').update(root, 'utf8').digest('hex').slice(0, 16);
-    return `\\\\.\\pipe\\terminal-windows-v${REGISTRY_VERSION}-${userKey}-${id}`;
+    return `\\\\.\\pipe\\termhelm-v${REGISTRY_VERSION}-${userKey}-${id}`;
   }
   const path = join(root, 'sockets', `${id}.sock`);
   assertContainedPath(root, path);
@@ -1118,7 +1118,7 @@ export async function withManagedLabelLocks<T>(
 }
 
 function legacyRegistryDirectory(options: ManagedManagerStorageOptions): string {
-  return resolve(options.legacyRegistryDirectory ?? join(tmpdir(), 'terminal-windows-supervisors'));
+  return resolve(options.legacyRegistryDirectory ?? join(tmpdir(), 'termhelm-supervisors'));
 }
 
 function legacyRegistryPath(label: string, options: ManagedManagerStorageOptions): string {

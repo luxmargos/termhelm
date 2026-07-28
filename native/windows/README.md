@@ -11,7 +11,7 @@ Job handle only when the Job does not become empty.
 
 At runtime the architecture-matched native executable is preferred after it
 passes `--self-test`. If it is absent, invalid, or fails that pre-launch probe,
-terminal-windows probes `terminal-windows-controller.ps1 -SelfTest` with
+termhelm probes `termhelm-controller.ps1 -SelfTest` with
 `pwsh`, then with Windows PowerShell 5.1 (`powershell.exe`). The first healthy
 PowerShell host runs the bundled fallback controller, which preserves the same
 Job Object ownership boundary. Default native and PowerShell assets are accepted
@@ -41,13 +41,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1
 
 The outputs are:
 
-- `native/win32-x64/terminal-windows-controller.exe`
-- `native/win32-arm64/terminal-windows-controller.exe`
+- `native/win32-x64/termhelm-controller.exe`
+- `native/win32-arm64/termhelm-controller.exe`
 
 Both platform directories must be copied into the published package. Runtime
-resolution can be overridden with `TERMINAL_WINDOWS_CONTROLLER_HELPER`; an
+resolution can be overridden with `TERMHELM_CONTROLLER_HELPER`; an
 override must be an absolute PE executable matching the current architecture.
 The published package must also include
-`native/windows/terminal-windows-controller.ps1`. Official packaging continues
+`native/windows/termhelm-controller.ps1`. Official packaging continues
 to require both native executables even though installed-package runtime
 selection can fall back to the PowerShell controller.
