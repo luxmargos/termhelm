@@ -7,3 +7,4 @@ coverage/
 /.vscode
 /demo
 /legacy-code.mjs
+/.plans
