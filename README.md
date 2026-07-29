@@ -189,6 +189,7 @@ and must already exist.
       "root": "<PROJECT_ROOT>"
     },
     "replaceLabels": ["<ADDITIONAL_SESSION_LABEL>"],
+    "autoClose": false,
     "shutdownDelayMs": 2500,
     "closeWaitTimeoutMs": 6000,
     "replaceTimeoutMs": 11500,
@@ -209,6 +210,10 @@ always replaced automatically, so do not repeat it. Labels are normalized to
 Unicode NFC, remain case-sensitive, and cannot be blank or contain surrounding
 whitespace.
 
+Shared launch defaults are:
+
+- `autoClose`: `false`
+
 Managed defaults are:
 
 - `labelScope`: `{ "type": "user" }`
@@ -218,9 +223,20 @@ Managed defaults are:
 - `replaceTimeoutMs`: `shutdownDelayMs + closeWaitTimeoutMs + 3000`
 - `exitAfterCommand`: `true`
 
-A config without `options.label` launches in plain mode. Managed-only options
+A config without `options.label` launches in plain mode. `autoClose` and
+`exitAfterCommand` work in both plain and managed modes. Managed-only options
 such as `labelScope`, `replaceLabels`, and managed timeouts require a label so a
 missing label can never silently downgrade a managed launch to plain behavior.
+
+When `autoClose` is `true`, TermHelm requests terminal UI closure only after
+authoritative completion of the owned process tree. On macOS it waits for the
+exact captured window-ID/TTY window to become idle and closes it only while it
+still contains the one owned tab; a window containing additional tabs is left
+open to avoid collateral closure. It never selects by title. Plain-launch
+macOS auto-close is delegated to a detached controller watcher, so it still
+works after the process that called `launchTerminalWindows()` exits. On Linux
+and Windows, final window disappearance remains subject to the terminal host's
+native completed-command behavior.
 
 `shutdownDelayMs` is the graceful-stop period before escalation.
 `closeWaitTimeoutMs` is the following forced-stop confirmation period.
@@ -248,13 +264,16 @@ const targets = [
   }
 ];
 
-const plainSession = launchTerminalWindows(targets);
+const plainSession = launchTerminalWindows(targets, {
+  autoClose: false
+});
 
 // Later, when the plain session is no longer needed:
 plainSession.close();
 
 const managedSession = startManagedTerminalWindows(targets, {
-  label: '<SESSION_LABEL>'
+  label: '<SESSION_LABEL>',
+  autoClose: true
 });
 
 await managedSession.ready;
@@ -285,6 +304,13 @@ wrapper used by managed CLI launches. Its `options` argument and `options.label`
 are required; invalid labels throw before any registry, filesystem, replacement,
 or process operation.
 
+A POSIX process terminated by a signal propagates the conventional shell status
+`128 + signal number` (`143` for `SIGTERM`). Package managers may still format
+their own lifecycle output differently: pnpm can print either a generic
+`ELIFECYCLE Command failed.` when pnpm itself is signalled, or include status 143
+when it remains alive to observe a child exit. TermHelm preserves the numeric
+process status without rewriting third-party output.
+
 `killManagedTerminalWindows(label, options)` stops the authenticated managed
 session currently owned by that label and returns `killed` or `not-found`.
 `options.timeoutMs` defaults to 11,500 ms. The operation participates in the
@@ -308,9 +334,10 @@ command.
   already started before rejecting the launch.
 - Managed fallback shells remain part of the owned process tree. On POSIX they
   accept commands without an interactive prompt, line editing, or job control.
-- Terminal-window cleanup is best-effort. Linux guarantees process-group cleanup,
-  not emulator-window disappearance. Descendants that leave the owned POSIX
-  process group are outside the portable ownership guarantee.
+- Automatic terminal-window closure is opt-in through `autoClose`; completed UI
+  remains open by default for inspection. Linux guarantees process-group cleanup,
+  not disappearance for every emulator implementation. Descendants that leave
+  the owned POSIX process group are outside the portable ownership guarantee.
 
 Plain launches use the same target validation and partial-launch rollback, but
 only managed launches publish authenticated label ownership and support

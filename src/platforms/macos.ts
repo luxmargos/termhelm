@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { InternalTerminalLaunchOptions, ResolvedTerminalTarget } from '../types.js';
 import { appleScriptString, buildPosixCommand, posixShellQuote } from '../shell.js';
 import {
@@ -12,7 +13,15 @@ import {
   type TerminalControllerOptions,
   type TerminalProcessController
 } from './controller.js';
+import {
+  buildCloseMacTerminalTabScript,
+  closeMacTerminalTab,
+  macTerminalTabState,
+  waitForMacTerminalTabToSettle
+} from './macos-auto-close.js';
 import { createPosixSidecarLaunch } from './posix-sidecar.js';
+
+export { buildCloseMacTerminalTabScript, closeMacTerminalTab } from './macos-auto-close.js';
 
 const legacyMacTerminalIdentities = new Map<number, { windowId: number; tty: string }>();
 let nextLegacyMacControllerId = 1;
@@ -48,7 +57,11 @@ class MacTerminalControllerImpl extends MarkerTerminalProcessController implemen
   readonly windowId: number | null;
   readonly tty: string | null;
 
-  constructor(control: ReturnType<typeof createTerminalControlPaths>, identity: MacTerminalIdentity) {
+  constructor(
+    control: ReturnType<typeof createTerminalControlPaths>,
+    identity: MacTerminalIdentity,
+    private readonly idleTimeoutMs: number
+  ) {
     super(control);
     this.windowId = identity.windowId;
     this.tty = identity.tty;
@@ -57,7 +70,9 @@ class MacTerminalControllerImpl extends MarkerTerminalProcessController implemen
   override close(timeoutMs = 6000): boolean {
     const stopped = super.close(timeoutMs);
     if (stopped && this.windowId !== null && this.tty !== null) {
-      closeMacTerminalTab(this.windowId, this.tty);
+      if (waitForMacTerminalTabToSettle(this.windowId, this.tty, this.idleTimeoutMs)) {
+        closeMacTerminalTab(this.windowId, this.tty);
+      }
     }
     return stopped;
   }
@@ -138,6 +153,40 @@ export function launchMacTerminal(target: ResolvedTerminalTarget, options: Inter
   return null;
 }
 
+function startMacTerminalAutoCloseWatcher(
+  control: ReturnType<typeof createTerminalControlPaths>,
+  identity: { windowId: number; tty: string },
+  idleTimeoutMs: number
+): void {
+  const watcherTokenPath = join(control.directory, `${control.id}.auto-close-watcher`);
+  writeFileSync(watcherTokenPath, `${control.sessionId}:${control.id}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx'
+  });
+  const payload = Buffer.from(JSON.stringify({
+    windowId: identity.windowId,
+    tty: identity.tty,
+    sessionId: control.sessionId,
+    targetId: control.id,
+    stoppedPath: control.stoppedPath,
+    failedPath: control.failedPath,
+    watcherTokenPath,
+    idleTimeoutMs
+  }), 'utf8').toString('base64url');
+  const scriptPath = fileURLToPath(new URL('./macos-auto-close.js', import.meta.url));
+  const watcher = spawn(process.execPath, [scriptPath, payload], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  watcher.once('error', () => rmSync(watcherTokenPath, { force: true }));
+  if (watcher.pid === undefined) {
+    rmSync(watcherTokenPath, { force: true });
+    throw new Error('Failed to start the macOS terminal auto-close watcher.');
+  }
+  watcher.unref();
+}
+
 export function launchMacTerminalController(
   target: ResolvedTerminalTarget,
   options: InternalTerminalLaunchOptions = {},
@@ -153,10 +202,32 @@ export function launchMacTerminalController(
       ...options,
       posixSidecar: createPosixSidecarLaunch(target, control, options)
     };
-    return new MacTerminalControllerImpl(control, launchMacTerminalIdentity(target, controlledOptions, control));
+    const identity = launchMacTerminalIdentity(target, controlledOptions, control);
+    const idleTimeoutMs = options.closeWaitTimeoutMs ?? 6_000;
+    const controller = new MacTerminalControllerImpl(control, identity, idleTimeoutMs);
+    const needsDetachedAutoClose = options.autoClose
+      && options.supervisorPid === undefined
+      && options.controlEndpoint === undefined;
+    if (needsDetachedAutoClose && identity.windowId !== null && identity.tty !== null) {
+      try {
+        startMacTerminalAutoCloseWatcher(control, {
+          windowId: identity.windowId,
+          tty: identity.tty
+        }, idleTimeoutMs);
+      } catch (error) {
+        controller.requestClose();
+        throw new TerminalControllerLaunchError(
+          'macOS Terminal launched but its auto-close watcher could not start.',
+          controller,
+          error
+        );
+      }
+    }
+    return controller;
   } catch (error) {
+    if (error instanceof TerminalControllerLaunchError) throw error;
     if (error instanceof MacTerminalMayHaveLaunchedError) {
-      const controller = new MacTerminalControllerImpl(control, { windowId: null, tty: null });
+      const controller = new MacTerminalControllerImpl(control, { windowId: null, tty: null }, 0);
       controller.requestClose();
       throw new TerminalControllerLaunchError(
         'macOS Terminal may have launched a target before identity capture failed.',
@@ -175,26 +246,12 @@ export function launchMacTerminalController(
 }
 
 function areMacTerminalWindowsIdle(windowIds: number[]): boolean {
-  const ownedWindowIds = windowIds
-    .map(controllerId => legacyMacTerminalIdentities.get(controllerId)?.windowId)
-    .filter((windowId): windowId is number => windowId !== undefined);
-  if (ownedWindowIds.length === 0) return true;
-  const result = spawnSync('osascript', [
-    '-e', 'tell application "Terminal"',
-    '-e', `set targetWindowIds to {${ownedWindowIds.join(',')}}`,
-    '-e', 'repeat with targetWindowId in targetWindowIds',
-    '-e', '  try',
-    '-e', '    set targetWindow to first window whose id is targetWindowId',
-    '-e', '    repeat with targetTab in tabs of targetWindow',
-    '-e', '      if busy of targetTab then return "busy"',
-    '-e', '    end repeat',
-    '-e', '  end try',
-    '-e', 'end repeat',
-    '-e', 'return "idle"',
-    '-e', 'end tell'
-  ], { encoding: 'utf8' });
-  if (result.error || result.status !== 0) return false;
-  return result.stdout.trim() === 'idle';
+  return windowIds.every(controllerId => {
+    const identity = legacyMacTerminalIdentities.get(controllerId);
+    if (!identity) return true;
+    const state = macTerminalTabState(identity.windowId, identity.tty);
+    return state === 'idle' || state === 'missing';
+  });
 }
 
 export function waitForMacTerminalWindowsToSettle(windowIds: number[], _shutdownCompletePaths: string[], timeoutMs: number): void {
@@ -203,29 +260,6 @@ export function waitForMacTerminalWindowsToSettle(windowIds: number[], _shutdown
     if (areMacTerminalWindowsIdle(windowIds)) return;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   }
-}
-
-export function buildCloseMacTerminalTabScript(windowId: number, tty: string): string[] {
-  return [
-    'tell application "Terminal"',
-    `set targetWindowId to ${Number(windowId)}`,
-    `set targetTty to ${appleScriptString(tty)}`,
-    'try',
-    '  set targetWindow to first window whose id is targetWindowId',
-    '  repeat with targetTab in tabs of targetWindow',
-    '    if tty of targetTab is targetTty then',
-    '      close targetTab',
-    '      return',
-    '    end if',
-    '  end repeat',
-    'end try',
-    'end tell'
-  ];
-}
-
-export function closeMacTerminalTab(windowId: number, tty: string): void {
-  const script = buildCloseMacTerminalTabScript(windowId, tty);
-  spawnSync('osascript', script.flatMap(line => ['-e', line]), { stdio: 'ignore' });
 }
 
 export function closeMacTerminalWindows(windowIds: number[]): void {

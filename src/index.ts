@@ -104,6 +104,9 @@ export function launchTerminalWindows(
   if (typeof options !== 'object' || options === null || Array.isArray(options)) {
     throw new Error('Terminal launch options must be an object.');
   }
+  if (options.autoClose !== undefined && typeof options.autoClose !== 'boolean') {
+    throw new Error('Terminal options.autoClose must be a boolean.');
+  }
   if (options.exitAfterCommand !== undefined && typeof options.exitAfterCommand !== 'boolean') {
     throw new Error('Terminal options.exitAfterCommand must be a boolean.');
   }
@@ -132,6 +135,7 @@ export function launchTerminalWindows(
   // smuggle supervisor PIDs, token paths, or state directories into a plain
   // launch through an untyped object.
   const launchOptions: InternalTerminalLaunchOptions = {
+    autoClose: options.autoClose ?? false,
     exitAfterCommand: options.exitAfterCommand
   };
   const controllers: TerminalProcessController[] = [];

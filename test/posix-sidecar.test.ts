@@ -219,6 +219,20 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(existsSync(`${control.stoppedPath}.runner-complete`)).toBe(false);
   });
 
+  it('maps a signal-only child result to the conventional 128-plus-signal status', async () => {
+    const target: TerminalTarget = {
+      title: 'signal status',
+      cwd: temporaryDirectory(),
+      command: 'kill -TERM $$'
+    };
+    const { child, control, stderr } = launchWrapper(target);
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(143);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(existsSync(`${control.stoppedPath}.runner-complete`)).toBe(false);
+  });
+
   it('gracefully stops a parent/child/grandchild group and leaves an unrelated process alive', async () => {
     const directory = temporaryDirectory();
     const tree = writeProcessTree(directory, 'exit');

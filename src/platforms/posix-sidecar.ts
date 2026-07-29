@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -411,7 +412,9 @@ function spawnOwnedShell(payload: PosixSidecarPayload, fallback: boolean): Owned
 function childExitStatus(result: OwnedChildResult): number {
   if (result.error) return 1;
   if (result.code !== null) return result.code;
-  return result.signal === null ? 1 : 128;
+  if (result.signal === null) return 1;
+  const signalNumber = osConstants.signals[result.signal];
+  return typeof signalNumber === 'number' ? 128 + signalNumber : 1;
 }
 
 function ownershipTokensExist(payload: PosixSidecarPayload): boolean {

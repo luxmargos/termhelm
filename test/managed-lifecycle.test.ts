@@ -8,6 +8,8 @@ const fakePlatform = vi.hoisted(() => {
     id: string;
     sessionId: string;
     active: boolean;
+    closeCalls: number;
+    disposeCalls: number;
     onRequestClose?: () => void;
     corruptStoppedMarker(): void;
     finish(forced?: boolean): void;
@@ -38,6 +40,8 @@ const fakePlatform = vi.hoisted(() => {
       id: options.id as string,
       sessionId,
       active: true,
+      closeCalls: 0,
+      disposeCalls: 0,
       corruptStoppedMarker() {
         writeFileSync(options.stoppedPath as string, '{malformed', { mode: 0o600 });
       },
@@ -62,11 +66,12 @@ const fakePlatform = vi.hoisted(() => {
       waitUntilStopped: vi.fn(() => !model.active),
       wasForced: vi.fn(() => false),
       close: vi.fn(() => {
+        model.closeCalls += 1;
         if (model.onRequestClose) model.onRequestClose();
         else model.finish();
         return !model.active;
       }),
-      dispose: vi.fn()
+      dispose: vi.fn(() => { model.disposeCalls += 1; })
     };
     afterLaunch?.(model, controller);
     return controller;
@@ -259,6 +264,47 @@ describe('managed lifecycle state machine', () => {
     expect(closed).toBe(false);
     owned[1]!.finish();
     await expect(session.closed).resolves.toMatchObject({ reason: 'target-exited' });
+  });
+
+  it('auto-closes an individually completed target while sibling targets remain active', async () => {
+    fakePlatform.reset();
+    const session = startManagedTerminalWindows([target('short'), target('long')], {
+      label: `per-target-auto-close-${randomUUID()}`,
+      autoClose: true,
+      shutdownDelayMs: 0,
+      closeWaitTimeoutMs: 500,
+      replaceTimeoutMs: 3_000
+    });
+    await session.ready;
+    const owned = fakePlatform.controllers.filter(controller => controller.sessionId === session.id);
+    owned[0]!.finish();
+    const deadline = Date.now() + 1_000;
+    while (owned[0]!.closeCalls === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(owned[0]!.closeCalls).toBe(1);
+    expect(owned[1]!.active).toBe(true);
+    owned[1]!.finish();
+    await expect(session.closed).resolves.toMatchObject({ reason: 'target-exited' });
+  });
+
+  it('preserves completed terminal UI by default and closes it only when autoClose is enabled', async () => {
+    for (const autoClose of [false, true]) {
+      fakePlatform.reset();
+      const session = startManagedTerminalWindows([target(`auto-close-${String(autoClose)}`)], {
+        label: `auto-close-${String(autoClose)}-${randomUUID()}`,
+        autoClose,
+        shutdownDelayMs: 0,
+        closeWaitTimeoutMs: 500,
+        replaceTimeoutMs: 3_000
+      });
+      await session.ready;
+      const owned = fakePlatform.controllers.find(controller => controller.sessionId === session.id)!;
+      owned.finish();
+      await expect(session.closed).resolves.toMatchObject({ reason: 'target-exited' });
+      expect(owned.closeCalls).toBe(autoClose ? 1 : 0);
+      expect(owned.disposeCalls).toBe(1);
+    }
   });
 
   it('hands off a naturally stopped predecessor without deleting its owner evidence', async () => {

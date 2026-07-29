@@ -194,6 +194,7 @@ describe('plain and packaged public API boundary', () => {
     launch.mockReturnValueOnce(controller);
 
     const session = launchTerminalWindows([target], {
+      autoClose: true,
       exitAfterCommand: false,
       supervisorPid: 123,
       shutdownTokenPath: '/untrusted/alive',
@@ -201,7 +202,7 @@ describe('plain and packaged public API boundary', () => {
     } as never);
 
     const passedOptions = launch.mock.calls.at(-1)?.[1];
-    expect(passedOptions).toEqual({ exitAfterCommand: false });
+    expect(passedOptions).toEqual({ autoClose: true, exitAfterCommand: false });
     session.close();
     expect(controller.close).toHaveBeenCalledTimes(1);
     expect(controller.dispose).toHaveBeenCalledTimes(1);

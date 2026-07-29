@@ -80,6 +80,7 @@ interface TargetOwnership {
   readonly controllerOptions: TerminalControllerOptions;
   controller?: TerminalProcessController;
   neverLaunched: boolean;
+  uiClosed: boolean;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -447,7 +448,8 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
         forcedPath: managedTargetMarkerPath(this.id, targetRecord.id, 'forced'),
         gracefulShutdownMs: this.shutdownDelayMs
       },
-      neverLaunched: true
+      neverLaunched: true,
+      uiClosed: false
     }));
     this.ready = this.readyDeferred.promise;
     this.closed = this.closedDeferred.promise;
@@ -537,6 +539,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
           this.recordPublished = true;
 
           const launchOptions: InternalTerminalLaunchOptions = {
+            autoClose: this.options.autoClose ?? false,
             exitAfterCommand: this.options.exitAfterCommand ?? true,
             supervisorPid: process.pid,
             shutdownTokenPath: this.supervisorToken,
@@ -742,6 +745,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
       throw new Error(`Refusing to finish managed terminal session ${this.id} before all targets terminate.`);
     }
 
+    this.closeConfirmedTargetUis();
     const warnings: string[] = [...this.lifecycleWarnings];
     const forcedTargetIds: string[] = [];
     for (const ownedTarget of this.ownership) {
@@ -751,9 +755,6 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
         forcedTargetIds.push(ownedTarget.id);
       }
       try {
-        // The process marker is already authoritative. This zero-time close is
-        // used only for exact-identity, best-effort UI cleanup on macOS.
-        controller.close(0);
         controller.dispose();
       } catch (error) {
         warnings.push(`Target ${ownedTarget.id} cleanup warning: ${errorMessage(error)}`);
@@ -773,6 +774,25 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
     this.closedDeferred.resolve(result);
     this.scheduleInfrastructureCleanup();
     return result;
+  }
+
+  private closeConfirmedTargetUis(): void {
+    if (!this.options.autoClose) return;
+    for (const ownedTarget of this.ownership) {
+      if (ownedTarget.uiClosed || !ownedTarget.controller) continue;
+      let terminated = false;
+      try {
+        terminated = this.targetConfirmedTerminated(ownedTarget.id);
+      } catch (error) {
+        this.lifecycleWarnings.push(`Target ${ownedTarget.id} UI-close inspection warning: ${errorMessage(error)}`);
+      }
+      if (!terminated) continue;
+      try {
+        if (ownedTarget.controller.close(0)) ownedTarget.uiClosed = true;
+      } catch (error) {
+        this.lifecycleWarnings.push(`Target ${ownedTarget.id} UI-close warning: ${errorMessage(error)}`);
+      }
+    }
   }
 
   private scheduleInfrastructureCleanup(): void {
@@ -848,6 +868,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
 
   private async monitorNaturalTermination(): Promise<void> {
     while (this.state === 'ready') {
+      this.closeConfirmedTargetUis();
       if (this.allTargetsConfirmedTerminated()) {
         await this.stop('target-exited');
         return;

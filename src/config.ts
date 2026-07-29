@@ -134,6 +134,11 @@ function validateConfigOptions(value: Record<string, unknown>, baseDirectory: st
     }
   }
 
+  if (value.autoClose !== undefined) {
+    if (typeof value.autoClose !== 'boolean') throw new Error('Terminal options.autoClose must be a boolean.');
+    options.autoClose = value.autoClose;
+  }
+
   if (value.exitAfterCommand !== undefined) {
     if (typeof value.exitAfterCommand !== 'boolean') throw new Error('Terminal options.exitAfterCommand must be a boolean.');
     options.exitAfterCommand = value.exitAfterCommand;
@@ -153,6 +158,7 @@ export function validateManagedTerminalLaunchOptions(
   return {
     ...options,
     label,
+    autoClose: options.autoClose ?? false,
     labelScope: options.labelScope ?? { type: 'user' },
     replaceLabels: options.replaceLabels ?? []
   };

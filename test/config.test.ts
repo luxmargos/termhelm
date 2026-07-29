@@ -21,8 +21,11 @@ describe('config validation', () => {
   it('accepts plain config without a managed label', () => {
     expect(validateTerminalWindowsConfig({
       targets: [{ title: 'api', cwd: '.', command: 'pnpm dev', env: { A: 'B' } }],
-      options: { exitAfterCommand: false }
-    })).toMatchObject({ targets: [{ title: 'api', command: 'pnpm dev' }], options: { exitAfterCommand: false } });
+      options: { autoClose: true, exitAfterCommand: false }
+    })).toMatchObject({
+      targets: [{ title: 'api', command: 'pnpm dev' }],
+      options: { autoClose: true, exitAfterCommand: false }
+    });
   });
 
   it('defaults an omitted target cwd and validates an explicit cwd like inline CLI mode', () => {
@@ -69,6 +72,7 @@ describe('config validation', () => {
       replaceLabels: ['dév', 'API', 'API', 'api']
     })).toEqual({
       label: 'dév',
+      autoClose: false,
       labelScope: { type: 'user' },
       replaceLabels: ['API', 'api']
     });
@@ -82,6 +86,7 @@ describe('config validation', () => {
     expect(() => validateManagedTerminalLaunchOptions({
       label: 'dev', shutdownDelayMs: 0x7fff_ffff
     })).toThrow('derived replace timeout');
+    expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', autoClose: 'yes' })).toThrow('autoClose');
     expect(() => validateManagedTerminalLaunchOptions({ label: 'dev', exitAfterCommand: 'yes' })).toThrow('exitAfterCommand');
   });
 

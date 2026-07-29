@@ -22,6 +22,9 @@ export interface TerminalLaunchCommand {
 }
 
 export interface TerminalLaunchOptions {
+  /** Close terminal UI after its owned process tree stops. Defaults to false. */
+  autoClose?: boolean;
+  /** Exit after the command instead of leaving an interactive shell. */
   exitAfterCommand?: boolean;
 }
 
@@ -45,7 +48,7 @@ export type ManagedTerminalLabelScope =
   | { type: 'user' }
   | { type: 'project'; root: string };
 
-export interface ManagedTerminalLaunchOptions {
+export interface ManagedTerminalLaunchOptions extends TerminalLaunchOptions {
   /** Stable logical identity for replacement. Required for every managed launch. */
   label: string;
   /** User-global by default, or explicitly scoped to a canonical project root. */
@@ -58,8 +61,6 @@ export interface ManagedTerminalLaunchOptions {
   closeWaitTimeoutMs?: number;
   /** Total deadline for replacement acknowledgement. */
   replaceTimeoutMs?: number;
-  /** Managed targets exit after their command by default. */
-  exitAfterCommand?: boolean;
 }
 
 export type ManagedTerminalCloseReason =

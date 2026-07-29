@@ -172,7 +172,10 @@ describe('platform identity safety', () => {
     const script = buildCloseMacTerminalTabScript(123, '/dev/ttys009').join('\n');
     expect(script).toContain('targetWindowId to 123');
     expect(script).toContain('targetTty to "/dev/ttys009"');
-    expect(script).toContain('tty of targetTab is targetTty');
+    expect(script).toContain('tty of targetTab as text) is targetTty');
+    expect(script).toContain('count of tabs of targetWindow) is not 1');
+    expect(script).toContain('if busy of targetTab then return');
+    expect(script).toContain('close targetWindow');
     expect(script).not.toContain('custom title');
   });
 

@@ -21,7 +21,8 @@ import { buildSupervisedPosixCommand } from '../src/index.js';
 import { buildPosixCommand } from '../src/index.js';
 
 const target: TerminalTarget = { title: 'api', command: 'pnpm dev' };
-const options: ManagedTerminalLaunchOptions = { label: 'dev' };
+const options: ManagedTerminalLaunchOptions = { label: 'dev', autoClose: true };
+const plainOptions: TerminalLaunchOptions = { autoClose: true, exitAfterCommand: true };
 const session: ManagedTerminalSession = startManagedTerminalWindows([target], options);
 const ready: Promise<void> = session.ready;
 const closed: Promise<ManagedTerminalCloseResult> = session.closed;
@@ -43,6 +44,7 @@ const unsafePidOption: TerminalLaunchOptions = { supervisorPid: 123 };
 // @ts-expect-error Shutdown tokens are internal controller metadata.
 const unsafeTokenOption: TerminalLaunchOptions = { shutdownTokenPath: '/tmp/alive' };
 
+void plainOptions;
 void ready;
 void closed;
 void closeResult;
