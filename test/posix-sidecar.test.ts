@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs';
+import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -123,7 +124,8 @@ function launchWrapper(
   gracefulShutdownMs = 250,
   extraOptions: InternalTerminalLaunchOptions = {},
   shellPath = process.env.SHELL,
-  providedControl?: TerminalControlPaths
+  providedControl?: TerminalControlPaths,
+  enableErrexit = false
 ): { child: ChildProcess; control: TerminalControlPaths; stderr: () => string } {
   const control = providedControl ?? createTerminalControlPaths({
     stateDirectory: temporaryDirectory(),
@@ -141,7 +143,8 @@ function launchWrapper(
       scriptPath: join(process.cwd(), 'dist/platforms/posix-sidecar.js')
     }
   };
-  const command = buildSupervisedPosixCommand(target, options, control);
+  const managedCommand = buildSupervisedPosixCommand(target, options, control);
+  const command = enableErrexit ? `set -e\n${managedCommand}` : managedCommand;
   const child = spawn('/bin/bash', ['-c', command], {
     detached: true,
     env: { ...process.env, ...(shellPath === undefined ? {} : { SHELL: shellPath }) },
@@ -196,6 +199,24 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(existsSync(control.stoppingPath)).toBe(false);
     expect(existsSync(control.forcedPath)).toBe(false);
     expect(statSync(control.stoppedPath).mode & 0o077).toBe(0);
+  });
+
+  it('finalizes a nonzero runner status even when the invoking shell has errexit enabled', async () => {
+    const target: TerminalTarget = { title: 'errexit', cwd: temporaryDirectory(), command: 'exit 23' };
+    const { child, control, stderr } = launchWrapper(
+      target,
+      250,
+      {},
+      process.env.SHELL,
+      undefined,
+      true
+    );
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(23);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(existsSync(control.readyPath)).toBe(true);
+    expect(existsSync(`${control.stoppedPath}.runner-complete`)).toBe(false);
   });
 
   it('gracefully stops a parent/child/grandchild group and leaves an unrelated process alive', async () => {
@@ -376,6 +397,53 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(await finalizePosixRunner(payload, processGroupId, true)).toBe(false);
     expect(existsSync(control.failedPath)).toBe(true);
     expect(existsSync(control.stoppedPath)).toBe(false);
+  });
+
+  it('publishes the stopped marker without waiting on an optional supervisor reconnection', async () => {
+    const directory = temporaryDirectory();
+    const target: TerminalTarget = { title: 'stalled supervisor', cwd: directory, command: 'exit 0' };
+    const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
+    const endpoint = join('/tmp', `.tw-stall-${randomUUID()}.sock`);
+    const sockets = new Set<Socket>();
+    const server = createServer(socket => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(endpoint, resolve);
+    });
+
+    try {
+      const launch = createPosixSidecarLaunch(target, control, {
+        exitAfterCommand: true,
+        controlEndpoint: endpoint,
+        authenticationToken: 'a'.repeat(43)
+      });
+      const payload = parsePosixSidecarPayload(launch.encodedPayload);
+      writeFileSync(control.readyPath, 'ready\n', { mode: 0o600 });
+      writeFileSync(
+        `${control.stoppedPath}.runner-complete`,
+        `${control.sessionId}:${control.id}\n`,
+        { mode: 0o600 }
+      );
+      const witness = spawn('/bin/sh', ['-c', 'exit 0'], { detached: true, stdio: 'ignore' });
+      childProcesses.push(witness);
+      const processGroupId = witness.pid;
+      if (processGroupId === undefined) throw new Error('POSIX absence witness did not return a PID.');
+      await waitForExit(witness);
+      const startedAt = Date.now();
+
+      expect(await finalizePosixRunner(payload, processGroupId, true)).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(existsSync(control.stoppedPath)).toBe(true);
+      expect(existsSync(`${control.stoppedPath}.runner-complete`)).toBe(false);
+      expect(sockets.size).toBe(0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(endpoint, { force: true });
+    }
   });
 
   it('bounds forced confirmation by elapsed time and leaves a present group unacknowledged', async () => {

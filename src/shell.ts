@@ -63,8 +63,8 @@ function buildManagedPosixSidecarCommand(
     '}',
     `${runnerFunctionName} &`,
     'runner_pid=$!',
-    `fg ${posixShellQuote(`%?${runnerFunctionName}`)}`,
-    'runner_status=$?',
+    'runner_status=0',
+    `fg ${posixShellQuote(`%?${runnerFunctionName}`)} || runner_status=$?`,
     `if ! ${executable} ${script} wait-finalize ${payload} "$runner_pid"; then`,
     '  exit 1',
     'fi'

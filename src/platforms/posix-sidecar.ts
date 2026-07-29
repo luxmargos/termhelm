@@ -589,30 +589,13 @@ export async function finalizePosixRunner(
     return false;
   }
 
-  let watch: ManagedSupervisorWatch | null = null;
-  try {
-    if (payload.controlEndpoint && payload.authenticationToken) {
-      try {
-        watch = await watchManagedSupervisor({
-          endpoint: payload.controlEndpoint,
-          authenticationToken: payload.authenticationToken,
-          requestId: randomUUID(),
-          sessionId: payload.sessionId,
-          targetId: payload.targetId,
-          timeoutMs: 5_000
-        });
-      } catch {
-        // The authenticated recovery marker remains authoritative when the
-        // original supervisor is no longer reachable.
-      }
-    }
-    if (watch) await watch.sendState('stopped').catch(() => undefined);
-    writeMarker(payload.stoppedPath, marker(payload, 'stopped'));
-    rmSync(runnerCompletionPath(payload), { force: true });
-    return true;
-  } finally {
-    await watch?.close().catch(() => undefined);
-  }
+  // The private marker is the authoritative local acknowledgement. Publish it
+  // immediately after the wrapper's independent absence check instead of
+  // delaying finalization on an optional supervisor reconnection: the server
+  // may itself be awaiting this marker while processing a stop request.
+  writeMarker(payload.stoppedPath, marker(payload, 'stopped'));
+  rmSync(runnerCompletionPath(payload), { force: true });
+  return true;
 }
 
 export async function waitAndFinalizePosixRunner(

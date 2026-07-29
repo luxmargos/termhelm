@@ -122,10 +122,14 @@ describe('POSIX managed wrapper', () => {
     expect(command).not.toContain('kill -KILL');
     expect(command).not.toContain('node server.js');
     expect(command).not.toContain('display only');
-    expect(command.slice(command.indexOf('runner_status=$?'))).not.toContain(control.failedPath);
+    expect(command.slice(command.indexOf('runner_status=0'))).not.toContain(control.failedPath);
     const runnerFunctionName = `termhelm_runner_${control.id.replace(/-/g, '_')}`;
+    const guardedForeground = `fg '%?${runnerFunctionName}' || runner_status=$?`;
     expect(command).toContain(`${runnerFunctionName}() {`);
-    expect(command).toContain(`fg '%?${runnerFunctionName}'`);
+    expect(command).toContain('runner_status=0');
+    expect(command).toContain(guardedForeground);
+    expect(command.indexOf('runner_status=0')).toBeLessThan(command.indexOf(guardedForeground));
+    expect(command.indexOf(guardedForeground)).toBeLessThan(command.indexOf('wait-finalize'));
     expect(command).not.toContain('fg %1');
   });
 

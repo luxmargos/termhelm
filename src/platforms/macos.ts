@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { InternalTerminalLaunchOptions, ResolvedTerminalTarget } from '../types.js';
-import { appleScriptString, buildPosixCommand } from '../shell.js';
+import { appleScriptString, buildPosixCommand, posixShellQuote } from '../shell.js';
 import {
   abandonTerminalControl,
   createTerminalControlPaths,
@@ -61,30 +63,61 @@ class MacTerminalControllerImpl extends MarkerTerminalProcessController implemen
   }
 }
 
+function createMacTerminalLaunchCommand(
+  command: string,
+  control?: ReturnType<typeof createTerminalControlPaths>
+): { command: string; launchScriptPath: string | null } {
+  if (!control) return { command, launchScriptPath: null };
+
+  const launchScriptPath = join(control.directory, `${control.id}.launch.sh`);
+  if (/[\r\n]/.test(launchScriptPath)) {
+    throw new Error('macOS Terminal launch paths cannot contain line breaks.');
+  }
+  writeFileSync(
+    launchScriptPath,
+    `/bin/rm -f ${posixShellQuote(launchScriptPath)}\n${command}\n`,
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+  );
+  return {
+    command: `. ${posixShellQuote(launchScriptPath)}`,
+    launchScriptPath
+  };
+}
+
 function launchMacTerminalIdentity(
   target: ResolvedTerminalTarget,
   options: InternalTerminalLaunchOptions,
   control?: ReturnType<typeof createTerminalControlPaths>
 ): MacTerminalIdentity {
-  const command = buildPosixCommand(target, options, control);
-  const result = spawnSync('osascript', [
-    '-e', 'tell application "Terminal"',
-    '-e', `set targetTab to do script ${appleScriptString(command)}`,
-    '-e', `set custom title of targetTab to ${appleScriptString(target.title)}`,
-    '-e', 'set targetTty to (tty of targetTab) as text',
-    '-e', 'activate',
-    '-e', 'repeat with candidateWindow in windows',
-    '-e', '  repeat with candidateTab in tabs of candidateWindow',
-    '-e', '    if ((tty of candidateTab) as text) is targetTty then',
-    '-e', '      return (((id of candidateWindow) as text) & linefeed & targetTty)',
-    '-e', '    end if',
-    '-e', '  end repeat',
-    '-e', 'end repeat',
-    '-e', 'error "Unable to identify the launched Terminal tab by TTY."',
-    '-e', 'end tell'
-  ], { encoding: 'utf8' });
+  const launch = createMacTerminalLaunchCommand(buildPosixCommand(target, options, control), control);
+  const result = (() => {
+    try {
+      return spawnSync('osascript', [
+        '-e', 'tell application "Terminal"',
+        '-e', `set targetTab to do script ${appleScriptString(launch.command)}`,
+        '-e', `set custom title of targetTab to ${appleScriptString(target.title)}`,
+        '-e', 'set targetTty to (tty of targetTab) as text',
+        '-e', 'activate',
+        '-e', 'repeat with candidateWindow in windows',
+        '-e', '  repeat with candidateTab in tabs of candidateWindow',
+        '-e', '    if ((tty of candidateTab) as text) is targetTty then',
+        '-e', '      return (((id of candidateWindow) as text) & linefeed & targetTty)',
+        '-e', '    end if',
+        '-e', '  end repeat',
+        '-e', 'end repeat',
+        '-e', 'error "Unable to identify the launched Terminal tab by TTY."',
+        '-e', 'end tell'
+      ], { encoding: 'utf8' });
+    } catch (error) {
+      if (launch.launchScriptPath) rmSync(launch.launchScriptPath, { force: true });
+      throw error;
+    }
+  })();
 
-  if (result.error) throw new Error(`Failed to launch Terminal: ${result.error.message}`);
+  if (result.error) {
+    if (launch.launchScriptPath) rmSync(launch.launchScriptPath, { force: true });
+    throw new Error(`Failed to launch Terminal: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new MacTerminalMayHaveLaunchedError(
       `Terminal launch command failed with exit code ${result.status}.\n${result.stderr}`
