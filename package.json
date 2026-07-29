@@ -28,6 +28,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "demo:managed:fresh": "pnpm run build && node examples/managed-launch/fresh.mjs",
+    "demo:managed:kill": "pnpm run build && node examples/managed-launch/kill.mjs",
+    "demo:managed:smoke": "node examples/managed-launch/smoke.mjs",
     "print:help": "pnpm run build && node dist/cli.js --help",
     "test": "vitest run",
     "test:types": "tsc -p tsconfig.public-api.json",

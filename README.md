@@ -343,6 +343,23 @@ Plain launches use the same target validation and partial-launch rollback, but
 only managed launches publish authenticated label ownership and support
 label-based replacement or shutdown.
 
+## Realistic nested demo
+
+The tracked demo mirrors a local `fresh` workflow without containers: a plain
+terminal launches a managed supervisor, which launches HTTP, web, event-stream,
+and parent/child worker daemons in separate terminals. A second plain terminal
+performs health checks.
+
+```sh
+pnpm run demo:managed:fresh
+# Run it again to exercise authenticated replacement and auto-close.
+pnpm run demo:managed:fresh
+pnpm run demo:managed:kill
+```
+
+Use `pnpm run demo:managed:smoke` for the non-GUI daemon contract check. See
+`examples/managed-launch/README.md` for details.
+
 ## Platform Support
 
 - macOS: Terminal.app through `osascript`, with controller-owned process groups.
