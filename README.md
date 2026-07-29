@@ -5,16 +5,10 @@ terminal application on macOS, Windows, and Linux. Use it from Node.js or its
 CLI when a command should run in a real desktop terminal instead of a hidden
 child process.
 
-## What the name means
-
-**TermHelm** combines “terminal” with “helm”: it opens graphical terminal
-windows and gives the caller a reliable way to steer their lifecycle. The name
-is platform-neutral; macOS, Windows, and Linux are all first-class targets.
-
-This package is not a terminal emulator, shell, or pseudoterminal. It delegates
-to an installed terminal application, so Linux requires a supported graphical
+TermHelm is not a terminal emulator, shell, or pseudoterminal. It delegates to
+an installed terminal application, so Linux requires a supported graphical
 terminal emulator and an active desktop/display session. It is not intended for
-headless servers or CI jobs that have no graphical terminal available.
+headless servers or CI jobs without a graphical terminal.
 
 ## How it works
 
@@ -32,72 +26,146 @@ headless servers or CI jobs that have no graphical terminal available.
 
 ## Install
 
-```sh
-pnpm add @luxmargos/termhelm
-```
+TermHelm is intended primarily for development and testing workflows. Installing
+it as a project development dependency is therefore the recommended default. A
+regular dependency is fully supported when application code imports TermHelm at
+runtime. Choose the installation pattern that matches your project.
+
+### Project development dependency
+
+| Package manager | Command |
+| --- | --- |
+| npm | `npm install --save-dev @luxmargos/termhelm` |
+| pnpm | `pnpm add --save-dev @luxmargos/termhelm` |
+| Yarn | `yarn add --dev @luxmargos/termhelm` |
+| Bun | `bun add --dev @luxmargos/termhelm` |
+
+### Project dependency
+
+| Package manager | Command |
+| --- | --- |
+| npm | `npm install @luxmargos/termhelm` |
+| pnpm | `pnpm add @luxmargos/termhelm` |
+| Yarn | `yarn add @luxmargos/termhelm` |
+| Bun | `bun add @luxmargos/termhelm` |
+
+### Global CLI
+
+Use a global installation when the `termhelm` command should be available
+outside a specific project.
+
+| Package manager | Command |
+| --- | --- |
+| npm | `npm install --global @luxmargos/termhelm` |
+| pnpm | `pnpm add --global @luxmargos/termhelm` |
+| Yarn Classic | `yarn global add @luxmargos/termhelm` |
+| Bun | `bun add --global @luxmargos/termhelm` |
 
 ## CLI
 
-`launch` is the only launch command. Without a label it performs a plain launch:
+Display the complete command and option reference with:
 
 ```sh
-termhelm launch --title api --command "pnpm run dev"
+termhelm --help
 ```
 
-Adding `--label` selects managed launch behavior:
+The examples below use descriptive placeholders:
+
+- `<TERMINAL_WINDOW_TITLE>`: the visible terminal window or tab title.
+- `<LONG_RUNNING_COMMAND>`: the development or test command to run.
+- `<SESSION_LABEL>`: the stable identity of a managed session.
+- `<ADDITIONAL_SESSION_LABEL>`: another managed session replaced by a launch.
+- `<WORKING_DIRECTORY>`: an existing directory for the command.
+- `<PROJECT_ROOT>`: an existing root used to scope a label to one project.
+- `<CONFIG_FILE>`: the path to a TermHelm JSON configuration file.
+- `<ENVIRONMENT_VARIABLE>` and `<VALUE>`: an environment entry for the command.
+- `<EXIT_MESSAGE>`: text displayed after the command exits.
+
+Replace every placeholder, including its angle brackets, with a real value.
+
+### Plain launch
+
+A launch without a label starts commands without publishing a managed label:
 
 ```sh
 termhelm launch \
-  --label local-dev \
-  --title api \
+  --title "<TERMINAL_WINDOW_TITLE>" \
+  --cwd "<WORKING_DIRECTORY>" \
+  --command "<LONG_RUNNING_COMMAND>"
+```
+
+`--cwd` is optional and defaults to the current working directory.
+
+### Managed launch
+
+Adding a label enables managed replacement and label-based shutdown:
+
+```sh
+termhelm launch \
+  --label "<SESSION_LABEL>" \
+  --title "<TERMINAL_WINDOW_TITLE>" \
+  --cwd "<WORKING_DIRECTORY>" \
+  --command "<LONG_RUNNING_COMMAND>"
+```
+
+For example:
+
+```sh
+termhelm launch \
+  --label "local-api" \
+  --title "API development server" \
   --command "pnpm run dev"
 ```
 
-The same rule applies to config files. `options.label` selects managed behavior;
-omitting it selects a plain launch:
+### Config file
+
+`options.label` selects managed behavior in a config file. Omitting it selects
+plain behavior.
 
 ```sh
-termhelm launch --config termhelm.json
+termhelm launch --config "<CONFIG_FILE>"
 ```
 
-Stop an active managed session by its label, either inline or with the same
-config file used to launch it:
+### Stop a managed session
+
+Stop a managed session with its label or the config file used to launch it:
 
 ```sh
-termhelm kill --label local-dev
-termhelm kill --config termhelm.json
+termhelm kill --label "<SESSION_LABEL>"
+termhelm kill --config "<CONFIG_FILE>"
 ```
 
-`kill` stops the complete managed session for `options.label`; it does not act
-on `replaceLabels`. A session can own more than one target process tree, so use
-one label per target when independent stop control is required. Plain launches
-cannot be killed by label.
+`kill` stops the complete session identified by `options.label`; it does not act
+on `replaceLabels`. Use one label per target when targets require independent
+stop control. Plain launches cannot be killed by label.
 
-Inline `--cwd` is optional and defaults to the current working directory. An
-explicit value must be non-blank and resolve to an existing directory.
+### Project-scoped labels
 
-Labels are user-global by default. To isolate the same label by project, select
-project scope. `--project-root` is optional in inline mode; when omitted, the
-resolved `--cwd` is used, including its current-working-directory default:
+Labels are user-global by default. Project scope allows the same label to be
+used independently by different projects:
 
 ```sh
 termhelm launch \
-  --label local-dev \
+  --label "<SESSION_LABEL>" \
   --label-scope project \
-  --title api \
-  --command "pnpm run dev"
+  --project-root "<PROJECT_ROOT>" \
+  --title "<TERMINAL_WINDOW_TITLE>" \
+  --command "<LONG_RUNNING_COMMAND>"
 ```
 
-Use the same scope to kill that session:
+Use the same scope and root when stopping the session:
 
 ```sh
-termhelm kill --label local-dev --label-scope project
+termhelm kill \
+  --label "<SESSION_LABEL>" \
+  --label-scope project \
+  --project-root "<PROJECT_ROOT>"
 ```
 
-An explicit `--project-root` takes precedence over `--cwd`. It must resolve to
-an existing directory.
-
-Use `termhelm --help` for all inline target flags.
+For `launch`, an omitted `--project-root` uses the resolved `--cwd`, which itself
+defaults to the current working directory. For `kill`, an omitted project root
+uses the current working directory. An explicit project root takes precedence
+and must already exist.
 
 ## Config
 
@@ -105,22 +173,22 @@ Use `termhelm --help` for all inline target flags.
 {
   "targets": [
     {
-      "title": "api",
-      "cwd": ".",
-      "command": "pnpm run dev",
+      "title": "<TERMINAL_WINDOW_TITLE>",
+      "cwd": "<WORKING_DIRECTORY>",
+      "command": "<LONG_RUNNING_COMMAND>",
       "env": {
-        "NODE_ENV": "development"
+        "<ENVIRONMENT_VARIABLE>": "<VALUE>"
       },
-      "exitMessage": "The api process exited."
+      "exitMessage": "<EXIT_MESSAGE>"
     }
   ],
   "options": {
-    "label": "local-dev",
+    "label": "<SESSION_LABEL>",
     "labelScope": {
       "type": "project",
-      "root": "."
+      "root": "<PROJECT_ROOT>"
     },
-    "replaceLabels": ["legacy-local-dev"],
+    "replaceLabels": ["<ADDITIONAL_SESSION_LABEL>"],
     "shutdownDelayMs": 2500,
     "closeWaitTimeoutMs": 6000,
     "replaceTimeoutMs": 11500,
@@ -128,6 +196,8 @@ Use `termhelm --help` for all inline target flags.
   }
 }
 ```
+
+Replace the placeholder strings with values appropriate for your project.
 
 Project-scope roots remain required in config files and library options. A
 config root is resolved relative to the config file; a library root and an
@@ -166,34 +236,38 @@ within that range.
 
 ```ts
 import {
-  killManagedTerminalWindows,
-  launchManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
 } from '@luxmargos/termhelm';
 
-launchTerminalWindows([
+const targets = [
   {
-    title: 'api',
-    command: 'pnpm run dev'
+    title: '<TERMINAL_WINDOW_TITLE>',
+    cwd: '<WORKING_DIRECTORY>',
+    command: '<LONG_RUNNING_COMMAND>'
   }
-]);
+];
 
-const session = startManagedTerminalWindows(
-  [
-    {
-      title: 'api',
-      command: 'pnpm run dev'
-    }
-  ],
-  { label: 'local-dev' }
-);
+const plainSession = launchTerminalWindows(targets);
 
-await session.ready;
-const result = await session.close();
-console.log(result.reason, result.forcedTargetIds, result.warnings);
+// Later, when the plain session is no longer needed:
+plainSession.close();
 
-const killResult = await killManagedTerminalWindows('another-session');
+const managedSession = startManagedTerminalWindows(targets, {
+  label: '<SESSION_LABEL>'
+});
+
+await managedSession.ready;
+const closeResult = await managedSession.close();
+console.log(closeResult.reason, closeResult.forcedTargetIds, closeResult.warnings);
+```
+
+To stop an active managed session from another process:
+
+```ts
+import { killManagedTerminalWindows } from '@luxmargos/termhelm';
+
+const killResult = await killManagedTerminalWindows('<SESSION_LABEL>');
 console.log(killResult.status);
 ```
 
@@ -220,80 +294,27 @@ command.
 
 ## Managed Process Guarantees
 
-- Replacement is fail-closed: a new same-label session does not launch until
-  the previous owned process trees acknowledge shutdown.
-- Labels select authenticated session records. Titles and saved PIDs are not
-  termination authority.
-- Per-user records, recovery markers, and sorted per-label locks are written
-  atomically. Controllers authenticate over a private Unix socket on macOS and
-  Linux or a named pipe on Windows; losing that supervisor connection requests
-  controller cleanup.
-- On Windows the runtime root is created with, or revalidated against, a
-  protected current-user-and-SYSTEM-only DACL before any record or secret is
-  written. A pre-existing root with weaker or ambiguous permissions is rejected
-  rather than repaired. Named-pipe requests still require the per-session
-  authentication token; pipe names and saved PIDs never grant authority.
-- Each contender allocates an immutable, runtime-global filesystem ticket and
-  publishes that generation in its per-label intents before waiting for locks.
-  Older delayed contenders self-cancel, so concurrent launches settle on the
-  newest registered request without overlapping process trees.
-- Windows probes the bundled PowerShell Job Object controller with `pwsh`, then
-  Windows PowerShell 5.1 (`powershell.exe`), before any target starts. The first
-  host to pass the ownership self-test is the only host used for that launch.
-  The controller script must resolve inside the canonical package root and
-  deletes its secret-bearing structural payload before compiling or launching
-  the target. macOS and Linux use distinct process groups plus a bundled Node
-  control sidecar, with graceful termination followed by forced termination
-  when necessary. On POSIX, only the live group-leader controller may signal
-  its own group; after it exits, the wrapper only observes group emptiness and
-  fails closed if identity is ambiguous. A terminal `stopped` or `failed`
-  marker is published only after that emptiness check, so diagnostic controller
-  failure cannot authorize replacement early.
-- Managed shutdown owns the fallback shell when `exitAfterCommand` is explicitly
-  `false`. On POSIX that fallback is a pipe-fed login shell so it cannot move
-  itself into an unowned process group. It accepts commands and remains owned,
-  but intentionally has no interactive prompt, line editing, or job control.
+- A managed launch does not replace a same-label session until the previous
+  process trees confirm shutdown.
+- Labels identify authenticated session records. Window titles and saved process
+  IDs are display and diagnostic data, never termination authority.
+- Each platform owns the launched workload and attempts graceful shutdown before
+  forced termination: Job Objects on Windows and process groups on macOS and
+  Linux.
+- On Windows, controller selection and its ownership self-test complete before
+  targets start. On every platform, an unconfirmed launch fails closed instead
+  of relying on window titles or saved process IDs.
+- If one target in a multi-target launch fails, TermHelm rolls back targets that
+  already started before rejecting the launch.
+- Managed fallback shells remain part of the owned process tree. On POSIX they
+  accept commands without an interactive prompt, line editing, or job control.
 - Terminal-window cleanup is best-effort. Linux guarantees process-group cleanup,
-  not emulator-window disappearance. On macOS UI cleanup verifies captured
-  window/TTY identity and never falls back to title matching.
-- On POSIX systems, descendants that deliberately escape their process group
-  with `setsid()` are outside the portable ownership guarantee.
+  not emulator-window disappearance. Descendants that leave the owned POSIX
+  process group are outside the portable ownership guarantee.
 
-PowerShell host selection is allowed only before a target may have started. If
-an already selected host starts the controller but does not produce an
-authenticated terminal acknowledgement, the launch fails closed and no second
-host is attempted. This prevents an uncertain launch from running the same
-target twice. Failure of every pre-launch probe also rejects the launch without
-using `taskkill`, window titles, or saved PIDs.
-
-If launch of one target in a multi-target session fails, already-started targets
-are rolled back and their shutdown is confirmed before the launch rejects.
-Plain launch mode shares validation and partial rollback hardening, but only
-managed mode publishes authenticated, acknowledged process-tree ownership.
-
-Lock ownership is never reclaimed from a saved PID. If a process crashes while
-holding a launch lock, the next launch fails closed with manual-cleanup guidance
-instead of risking an ABA race. Crashed-session recovery directories may also be
-retained conservatively after their exact record is removed. Generation ticket
-directories are intentionally permanent and must not be pruned or reused. The
-latest per-label launch intent is also retained as a durable high-water fence;
-only a newer locked contender may prune it.
-
-## Migrating from 0.1.x
-
-The package is now named `@luxmargos/termhelm`. Replace the previous dependency
-and import path with this name, and invoke the CLI as `termhelm`.
-
-Version `0.2.0` intentionally removes the implicit `"terminal-windows"` managed
-label. Pass `{ label: "..." }` to every managed library call, add
-`options.label` to managed config files, or pass `--label` to `termhelm launch`.
-
-`replaceLabels` now clearly means additional labels; the current label is always
-included by the manager. The unsafe title-based macOS close option and public
-supervisor PID/token fields were removed. Version 0.1.x has no authenticated
-process-tree acknowledgement, so every extant legacy registry entry requires
-manual migration: stop the old supervisor and its targets, remove that legacy
-entry, then retry. Version 0.2.0 never signals through its saved PID.
+Plain launches use the same target validation and partial-launch rollback, but
+only managed launches publish authenticated label ownership and support
+label-based replacement or shutdown.
 
 ## Platform Support
 
@@ -303,26 +324,6 @@ entry, then retry. Version 0.2.0 never signals through its saved PID.
 - Linux: `$TERMINAL`, `gnome-terminal`, `konsole`, `xfce4-terminal`,
   `mate-terminal`, `lxterminal`, `xterm`, or `x-terminal-emulator`, with
   controller-owned process groups.
-
-## Release Packaging
-
-The published package contains
-`native/windows/termhelm-controller.ps1`. `prepack` builds TypeScript and
-strictly verifies that this controller exists, is a regular non-symlink file,
-contains the required payload-deletion and Job Object implementation fragments,
-and is included by `package.json`.
-
-CI runs tests on Ubuntu, macOS, and Windows. Windows CI exercises the controller
-self-test with both PowerShell Core and Windows PowerShell 5.1, and the package
-job checks that the final npm archive contains the controller script.
-
-Hosted CI mocks the identity-checked Terminal.app UI close. To opt into the real
-Terminal.app identity/close check on an interactive macOS host, grant Terminal
-automation permission and run:
-
-```sh
-TERMHELM_MANUAL_MACOS=1 pnpm exec vitest run test/macos-terminal.manual.test.ts
-```
 
 ## License
 
