@@ -6,6 +6,7 @@ import {
 } from './managed.js';
 import {
   launchLinuxTerminalController,
+  LINUX_TERMINAL_REQUIREMENT,
   resolveLinuxLauncher
 } from './platforms/linux.js';
 import { launchMacTerminalController } from './platforms/macos.js';
@@ -21,11 +22,16 @@ import type {
   InternalTerminalLaunchOptions,
   TerminalLaunchOptions,
   TerminalTarget,
+  TerminalUiCloseOutcome,
+  TerminalUiCloseResult,
+  TerminalWindowCloseResult,
   TerminalWindowSession
 } from './types.js';
 
 export type {
   LinuxLauncher,
+  LinuxTerminalAdapterId,
+  LinuxTerminalCapabilities,
   ManagedTerminalCloseReason,
   ManagedTerminalCloseResult,
   ManagedTerminalKillOptions,
@@ -36,6 +42,9 @@ export type {
   TerminalLaunchCommand,
   TerminalLaunchOptions,
   TerminalTarget,
+  TerminalUiCloseOutcome,
+  TerminalUiCloseResult,
+  TerminalWindowCloseResult,
   TerminalWindowSession,
   TerminalWindowsConfig,
   TerminalWindowsConfigOptions
@@ -64,28 +73,103 @@ export {
 } from './managed.js';
 
 class ControllerTerminalWindowSession implements TerminalWindowSession {
-  private closed = false;
+  private readonly closedPromise: Promise<TerminalWindowCloseResult>;
   private readonly pendingControllers: Set<TerminalProcessController>;
+  private readonly controllerOrder: readonly TerminalProcessController[];
+  private readonly uiOutcomes = new Map<string, TerminalUiCloseOutcome>();
+  private readonly completionWarningTargets = new Set<string>();
+  private readonly warnings: string[] = [];
+  private resolveClosed!: (result: TerminalWindowCloseResult) => void;
+  private observationReferenced = false;
+  private observationTimer: ReturnType<typeof setTimeout> | null = null;
+  private settled = false;
 
-  constructor(controllers: readonly TerminalProcessController[]) {
+  constructor(
+    controllers: readonly TerminalProcessController[],
+    private readonly autoClose: boolean
+  ) {
+    this.controllerOrder = [...controllers];
     this.pendingControllers = new Set(controllers);
+    this.closedPromise = new Promise(resolve => { this.resolveClosed = resolve; });
+    if (controllers.length === 0) this.settle();
+    else this.scheduleObservation();
+  }
+
+  get closed(): Promise<TerminalWindowCloseResult> {
+    this.observationReferenced = true;
+    this.observationTimer?.ref?.();
+    return this.closedPromise;
+  }
+
+  private scheduleObservation(): void {
+    this.observationTimer = setTimeout(() => {
+      this.observationTimer = null;
+      this.observeNaturalCompletion();
+    }, 50);
+    if (!this.observationReferenced) this.observationTimer.unref?.();
+  }
+
+  private observeNaturalCompletion(): void {
+    if (this.settled) return;
+    for (const controller of [...this.pendingControllers]) {
+      try {
+        if (!controller.waitUntilStopped(0)) continue;
+        this.finishController(controller);
+      } catch (error) {
+        if (!this.completionWarningTargets.has(controller.id)) {
+          this.completionWarningTargets.add(controller.id);
+          this.warnings.push(`Target ${controller.id} completion warning: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    if (this.pendingControllers.size === 0) this.settle();
+    else this.scheduleObservation();
+  }
+
+  private finishController(controller: TerminalProcessController): void {
+    let outcome: TerminalUiCloseOutcome;
+    try {
+      outcome = controller.terminalUiOutcome?.(this.autoClose)
+        ?? (this.autoClose ? 'unsupported' : 'preserved');
+    } catch (error) {
+      outcome = 'unsupported';
+      this.warnings.push(`Target ${controller.id} UI outcome warning: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.uiOutcomes.set(controller.id, outcome);
+    try {
+      controller.dispose();
+    } catch (error) {
+      this.warnings.push(`Target ${controller.id} cleanup warning: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.pendingControllers.delete(controller);
+  }
+
+  private settle(): void {
+    if (this.settled) return;
+    this.settled = true;
+    if (this.observationTimer !== null) clearTimeout(this.observationTimer);
+    this.observationTimer = null;
+    const uiCloseResults: TerminalUiCloseResult[] = this.controllerOrder.map(controller => ({
+      targetId: controller.id,
+      outcome: this.uiOutcomes.get(controller.id) ?? 'unsupported'
+    }));
+    this.resolveClosed({ uiCloseResults, warnings: [...this.warnings] });
   }
 
   close(): void {
-    if (this.closed) return;
+    if (this.settled) return;
     const errors: unknown[] = [];
     for (const controller of [...this.pendingControllers].reverse()) {
       try {
         if (!controller.close()) {
           throw new Error(`Terminal target ${controller.id} did not acknowledge shutdown.`);
         }
-        controller.dispose();
-        this.pendingControllers.delete(controller);
+        this.finishController(controller);
       } catch (error) {
         errors.push(error);
       }
     }
-    this.closed = this.pendingControllers.size === 0;
+    if (this.pendingControllers.size === 0) this.settle();
     if (errors.length > 0) {
       throw new AggregateError(errors, 'One or more terminal targets could not be closed safely.');
     }
@@ -114,11 +198,11 @@ export function launchTerminalWindows(
   const validatedTargets = targets.map((target, index) =>
     validateTerminalTarget(target, `targets[${index}]`)
   );
-  if (validatedTargets.length === 0) return new ControllerTerminalWindowSession([]);
+  if (validatedTargets.length === 0) return new ControllerTerminalWindowSession([], options.autoClose ?? false);
 
   const linuxLauncher = process.platform === 'linux' ? resolveLinuxLauncher() : null;
   if (process.platform === 'linux' && !linuxLauncher) {
-    throw new Error('No supported Linux terminal emulator was found.');
+    throw new Error(LINUX_TERMINAL_REQUIREMENT);
   }
   const windowsController = process.platform === 'win32' ? resolveWindowsControllerBackend() : null;
   if (process.platform === 'win32' && !windowsController) {
@@ -148,10 +232,14 @@ export function launchTerminalWindows(
           : launchLinuxTerminalController(target, linuxLauncher!, launchOptions);
       controllers.push(controller);
       if (!controller.waitUntilReady()) {
-        throw new Error(`Terminal target ${controller.id} did not acknowledge readiness.`);
+        const diagnostic = controller.launchDiagnostic?.();
+        throw new Error(
+          `Terminal target ${controller.id} did not acknowledge readiness.` +
+          (diagnostic ? ` Launcher diagnostic: ${diagnostic}` : '')
+        );
       }
     }
-    return new ControllerTerminalWindowSession(controllers);
+    return new ControllerTerminalWindowSession(controllers, launchOptions.autoClose ?? false);
   } catch (launchError) {
     if (launchError instanceof TerminalControllerLaunchError) {
       controllers.push(launchError.controller);

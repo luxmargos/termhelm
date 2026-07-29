@@ -2,15 +2,20 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync
 } from 'node:fs';
 import { constants as osConstants } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   watchManagedSupervisor,
@@ -51,6 +56,52 @@ export interface PosixSidecarPayload {
   exitAfterCommand: boolean;
 }
 
+function encodedPayload(payload: PosixSidecarPayload): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function writePrivatePayloadFile(path: string, payload: PosixSidecarPayload): void {
+  writeFileSync(path, `${encodedPayload(payload)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  chmodSync(path, 0o600);
+}
+
+function readAndRemovePrivatePayloadFile(path: string): PosixSidecarPayload {
+  const resolvedPath = validatePath(path, 'payload path');
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(resolvedPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const stats = fstatSync(descriptor);
+    if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_PAYLOAD_BYTES * 2) {
+      throw new Error('POSIX controller payload file is invalid.');
+    }
+    if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
+      throw new Error('POSIX controller payload file is not owned by the current user.');
+    }
+    if ((stats.mode & 0o077) !== 0) {
+      throw new Error('POSIX controller payload file permissions are unsafe.');
+    }
+    return parsePosixSidecarPayload(readFileSync(descriptor, 'utf8').trim());
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(resolvedPath, { force: true });
+  }
+}
+
+export function cleanupPosixSidecarLaunch(
+  launch: NonNullable<InternalTerminalLaunchOptions['posixSidecar']>
+): void {
+  rmSync(launch.payloadPath, { force: true });
+  rmSync(launch.finalizerPayloadPath, { force: true });
+}
+
+function bundledPosixSidecarScriptPath(): string {
+  const modulePath = fileURLToPath(import.meta.url);
+  if (modulePath.endsWith('.js') && existsSync(modulePath)) return modulePath;
+  const developmentBuildPath = resolve(dirname(modulePath), '..', '..', 'dist', 'platforms', 'posix-sidecar.js');
+  if (existsSync(developmentBuildPath)) return developmentBuildPath;
+  return modulePath;
+}
+
 export function createPosixSidecarLaunch(
   target: ResolvedTerminalTarget,
   control: TerminalControlPaths,
@@ -79,10 +130,33 @@ export function createPosixSidecarLaunch(
     payload.controlEndpoint = options.controlEndpoint;
     payload.authenticationToken = options.authenticationToken;
   }
+  const finalizerPayload: PosixSidecarPayload = {
+    ...payload,
+    cwd: control.directory,
+    command: '',
+    exitAfterCommand: true
+  };
+  delete finalizerPayload.env;
+  delete finalizerPayload.exitMessage;
+  delete finalizerPayload.supervisorTokenPath;
+  delete finalizerPayload.controlEndpoint;
+  delete finalizerPayload.authenticationToken;
+
+  const payloadPath = join(control.directory, `${control.id}.runner.payload`);
+  const finalizerPayloadPath = join(control.directory, `${control.id}.finalizer.payload`);
+  try {
+    writePrivatePayloadFile(payloadPath, payload);
+    writePrivatePayloadFile(finalizerPayloadPath, finalizerPayload);
+  } catch (error) {
+    rmSync(payloadPath, { force: true });
+    rmSync(finalizerPayloadPath, { force: true });
+    throw error;
+  }
   return {
     executablePath: process.execPath,
-    scriptPath: fileURLToPath(import.meta.url),
-    encodedPayload: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
+    scriptPath: bundledPosixSidecarScriptPath(),
+    payloadPath,
+    finalizerPayloadPath
   };
 }
 
@@ -273,7 +347,7 @@ export function probePosixGroupAbsence(processGroupId: number): boolean {
 
 async function inspectProcessGroup(processGroupId: number): Promise<number[]> {
   const output = await new Promise<string>((resolveOutput, reject) => {
-    const child = spawn('/bin/ps', ['-axo', 'pid=,pgid='], {
+    const child = spawn('ps', ['-axo', 'pid=,pgid='], {
       detached: true,
       env: { ...process.env, LC_ALL: 'C' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -292,7 +366,7 @@ async function inspectProcessGroup(processGroupId: number): Promise<number[]> {
     const abandonInspection = (error: Error): void => {
       finish(error);
       // The snapshot is only an optimization, so close its pipes and let the
-      // trusted /bin/ps child exit naturally. A saved numeric PID is never
+      // PATH-resolved ps child exit naturally. A saved numeric PID is never
       // promoted to signal authority, even for this auxiliary process.
       child.stdout.destroy();
       child.stderr.destroy();
@@ -351,31 +425,48 @@ interface OwnedChild {
 
 function spawnOwnedShell(payload: PosixSidecarPayload, fallback: boolean): OwnedChild {
   const shell = process.env.SHELL || '/bin/sh';
-  const child = spawn(shell, fallback ? ['-l'] : ['-lc', payload.command], {
+  const commandScriptPath = fallback
+    ? null
+    : join(dirname(payload.targetTokenPath), `${payload.targetId}.command`);
+  if (commandScriptPath !== null) {
+    writeFileSync(commandScriptPath, `${payload.command}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx'
+    });
+    chmodSync(commandScriptPath, 0o600);
+  }
+  const child = spawn(shell, fallback ? ['-l'] : ['-l', commandScriptPath!], {
     cwd: payload.cwd,
-    env: { ...process.env, ...payload.env },
+    env: {
+      ...process.env,
+      ...payload.env,
+      ...(fallback ? { TERMHELM_INTERNAL_FALLBACK_SHELL: '1' } : {})
+    },
     // An interactive shell attached directly to the terminal enables job
     // control and moves itself into a new process group. Keep fallback input
     // behind the runner so the shell remains in the pinned owned group.
     stdio: fallback ? ['pipe', 'inherit', 'inherit'] : 'inherit',
     detached: false
   });
-  let releaseFallbackInput = (): void => undefined;
+  let releaseFallbackInput = (): void => {
+    if (commandScriptPath !== null) rmSync(commandScriptPath, { force: true });
+  };
   if (fallback) {
     const input = child.stdin;
     if (input === null) throw new Error('POSIX fallback shell input pipe is unavailable.');
     const ignoreClosedInput = (): void => undefined;
     let released = false;
     input.on('error', ignoreClosedInput);
-    // A caught SIGINT is reset to the default disposition in commands the
-    // shell starts, while the fallback shell itself survives terminal Ctrl+C.
-    input.write("trap ':' INT\n");
+    // The user's interactive shell owns its own interrupt policy. Injecting
+    // Bourne-only trap syntax would corrupt fish, tcsh, and other valid shells.
     process.stdin.pipe(input);
     releaseFallbackInput = () => {
       if (released) return;
       released = true;
       process.stdin.unpipe(input);
       input.removeListener('error', ignoreClosedInput);
+      if (commandScriptPath !== null) rmSync(commandScriptPath, { force: true });
     };
   }
   let currentResult: OwnedChildResult | null = null;
@@ -437,8 +528,17 @@ async function waitForChildOrShutdown(
 async function drainOwnedGroup(
   payload: PosixSidecarPayload,
   reportStopping: () => Promise<void>,
-  completionOnForcedExit: boolean
+  completionOnForcedExit: boolean,
+  naturalCompletion = false
 ): Promise<void> {
+  if (naturalCompletion) {
+    try {
+      const members = await inspectProcessGroup(process.pid);
+      if (members.length === 1 && members[0] === process.pid) return;
+    } catch {
+      // Continue with conservative descendant cleanup.
+    }
+  }
   await reportStopping();
   process.kill(0, 'SIGTERM');
   const deadline = Date.now() + payload.gracefulShutdownMs;
@@ -549,7 +649,7 @@ export async function runPosixRunner(payload: PosixSidecarPayload): Promise<numb
     if (!groupDrained) {
       await drainOwnedGroup(payload, async () => {
         if (shutdownRequested || !ownershipTokensExist(payload)) await reportStopping();
-      }, true);
+      }, true, true);
     }
     await watch?.close().catch(() => undefined);
     writeRunnerCompletion(payload);
@@ -627,9 +727,9 @@ async function main(): Promise<void> {
     process.exitCode = probePosixGroupAbsence(Number(process.argv[3])) ? 0 : 1;
     return;
   }
-  const encodedPayload = process.argv[3];
-  if (!encodedPayload) throw new Error('POSIX controller payload is required.');
-  const payload = parsePosixSidecarPayload(encodedPayload);
+  const payloadPath = process.argv[3];
+  if (!payloadPath) throw new Error('POSIX controller payload path is required.');
+  const payload = readAndRemovePrivatePayloadFile(payloadPath);
   if (mode === 'run') {
     process.exitCode = await runPosixRunner(payload);
     return;

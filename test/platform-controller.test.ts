@@ -20,9 +20,11 @@ import {
 } from '../src/platforms/controller.js';
 import { buildCloseMacTerminalTabScript, parseMacTerminalIdentityOutput } from '../src/platforms/macos.js';
 import { resolveWindowsControllerBackend } from '../src/platforms/windows.js';
+import { ensurePrivateWindowsDirectory } from '../src/platforms/windows-security.js';
 import {
   buildPosixEnvPrefix,
   buildSupervisedPosixCommand,
+  posixShellQuote,
   windowsBatchPath,
   windowsEchoEscape
 } from '../src/shell.js';
@@ -30,8 +32,14 @@ import {
 const temporaryDirectories: string[] = [];
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'termhelm-controller-test-'));
-  temporaryDirectories.push(directory);
+  const parent = mkdtempSync(join(tmpdir(), 'termhelm-controller-test-'));
+  temporaryDirectories.push(parent);
+  if (process.platform !== 'win32') return parent;
+  const directory = join(parent, 'private');
+  ensurePrivateWindowsDirectory(directory, {
+    protectedRoot: true,
+    description: 'the controller test state root'
+  });
   return directory;
 }
 
@@ -46,6 +54,18 @@ afterEach(() => {
 });
 
 describe('terminal process controller', () => {
+  it('secures an owned Windows control directory before writing its ownership token', () => {
+    const source = readFileSync('src/platforms/controller.ts', 'utf8');
+    const securitySource = readFileSync('src/platforms/windows-security.ts', 'utf8');
+    const securityIndex = source.indexOf('ensurePrivateWindowsDirectory(directory');
+    const tokenIndex = source.indexOf('writeTerminalMarker(paths.targetTokenPath');
+    expect(securityIndex).toBeGreaterThan(0);
+    expect(tokenIndex).toBeGreaterThan(securityIndex);
+    expect(securitySource).toContain('ContainerInherit');
+    expect(securitySource).toContain('ObjectInherit');
+    expect(securitySource).toContain('revalidatePrivateWindowsDirectory');
+  });
+
   it('uses manager-provided identities and writes v2 markers', () => {
     const directory = temporaryDirectory();
     const sessionId = '11111111-1111-4111-8111-111111111111';
@@ -104,20 +124,21 @@ describe('POSIX managed wrapper', () => {
   it('owns a process group and acknowledges ready, forced, and stopped states', () => {
     const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory(), gracefulShutdownMs: 1200 });
     const command = buildSupervisedPosixCommand(
-      { title: 'display only', cwd: '/tmp', command: 'node server.js' },
+      { title: 'display only', cwd: tmpdir(), command: 'node server.js' },
       {
         exitAfterCommand: true,
         posixSidecar: {
-          executablePath: '/usr/bin/node',
-          scriptPath: '/tmp/posix-sidecar.js',
-          encodedPayload: 'payload'
+          executablePath: process.execPath,
+          scriptPath: join(tmpdir(), 'posix-sidecar.js'),
+          payloadPath: join(tmpdir(), 'runner.payload'),
+          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload')
         }
       },
       control
     );
 
-    expect(command).toContain("run 'payload'");
-    expect(command).toContain("wait-finalize 'payload' \"$runner_pid\"");
+    expect(command).toContain(`run ${posixShellQuote(join(tmpdir(), 'runner.payload'))}`);
+    expect(command).toContain(`wait-finalize ${posixShellQuote(join(tmpdir(), 'finalizer.payload'))} "$runner_pid"`);
     expect(command).not.toContain('kill -TERM');
     expect(command).not.toContain('kill -KILL');
     expect(command).not.toContain('node server.js');
@@ -136,19 +157,20 @@ describe('POSIX managed wrapper', () => {
   it('fails closed through the bounded finalizer when ESRCH is not observed', () => {
     const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
     const command = buildSupervisedPosixCommand(
-      { title: 'sidecar', cwd: '/tmp', command: 'exit 0' },
+      { title: 'sidecar', cwd: tmpdir(), command: 'exit 0' },
       {
         exitAfterCommand: true,
         posixSidecar: {
-          executablePath: '/usr/bin/node',
-          scriptPath: '/tmp/posix-sidecar.js',
-          encodedPayload: 'payload'
+          executablePath: process.execPath,
+          scriptPath: join(tmpdir(), 'posix-sidecar.js'),
+          payloadPath: join(tmpdir(), 'runner.payload'),
+          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload')
         }
       },
       control
     );
 
-    expect(command).toContain("wait-finalize 'payload' \"$runner_pid\"");
+    expect(command).toContain(`wait-finalize ${posixShellQuote(join(tmpdir(), 'finalizer.payload'))} "$runner_pid"`);
     expect(command).toContain(control.failedPath);
     expect(command).not.toContain(control.stoppedPath);
   });
@@ -156,7 +178,7 @@ describe('POSIX managed wrapper', () => {
   it('fails before launch when the bundled POSIX sidecar is unavailable', () => {
     const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
     expect(() => buildSupervisedPosixCommand(
-      { title: 'sidecar', cwd: '/tmp', command: 'exit 0' },
+      { title: 'sidecar', cwd: tmpdir(), command: 'exit 0' },
       { exitAfterCommand: true },
       control
     )).toThrow('Managed POSIX terminal mode requires its bundled controller sidecar.');
@@ -358,8 +380,16 @@ describe('platform identity safety', () => {
     expect(controllerSource).toContain('AssignProcessToJobObject');
     expect(controllerSource).toContain('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE');
     expect(controllerSource).toContain('TerminateJobObject');
+    expect(controllerSource).toContain('" /d /q /v:off /c "');
+    expect(controllerSource).not.toContain('/c call');
+    expect(controllerSource).not.toContain('paths containing percent signs are unsupported');
     expect(controllerSource).not.toContain('taskkill');
     expect(controllerSource).not.toContain('MainWindowTitle');
+    const privatePathCaptureIndex = controllerSource.indexOf('$commandFile = $actualCommandFile');
+    const compilationIndex = controllerSource.indexOf('Add-Type -TypeDefinition $controllerSource', privatePathCaptureIndex);
+    expect(privatePathCaptureIndex).toBeGreaterThan(0);
+    expect(compilationIndex).toBeGreaterThan(privatePathCaptureIndex);
+    expect(controllerSource).toContain('foreach ($privatePath in @($commandFile, $exitMessageFile))');
     expect(windowsSource).toContain('stoppingFile: control.stoppingPath');
     expect(windowsSource).not.toContain("controllerProcess.once('exit'");
     const childErrorListenerIndex = windowsSource.indexOf("controllerProcess.once('error'");
@@ -370,6 +400,7 @@ describe('platform identity safety', () => {
       'writeTerminalStateMarker'
     );
     expect(windowsSource).toContain('controller?.requestClose()');
+    expect(windowsSource).toContain(`'chcp 65001 >nul'`);
     expect(windowsSource).toContain(`'  type "%TERMHELM_EXIT_MESSAGE_FILE%"'`);
     expect(windowsSource).toContain('createWindowsExitMessageFile(target.exitMessage, control)');
     expect(windowsSource).not.toContain('windowsEchoEscape(target.exitMessage)');

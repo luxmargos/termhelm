@@ -40,7 +40,8 @@ export interface InternalTerminalLaunchOptions extends TerminalLaunchOptions {
   posixSidecar?: {
     executablePath: string;
     scriptPath: string;
-    encodedPayload: string;
+    payloadPath: string;
+    finalizerPayloadPath: string;
   };
 }
 
@@ -71,9 +72,23 @@ export type ManagedTerminalCloseReason =
   | 'target-exited'
   | 'launch-failed';
 
+export type TerminalUiCloseOutcome =
+  | 'closed'
+  | 'preserved'
+  | 'host-managed'
+  | 'refused-shared'
+  | 'cancelled'
+  | 'unsupported';
+
+export interface TerminalUiCloseResult {
+  readonly targetId: string;
+  readonly outcome: TerminalUiCloseOutcome;
+}
+
 export interface ManagedTerminalCloseResult {
   readonly reason: ManagedTerminalCloseReason;
   readonly forcedTargetIds: readonly string[];
+  readonly uiCloseResults: readonly TerminalUiCloseResult[];
   readonly warnings: readonly string[];
 }
 
@@ -96,7 +111,14 @@ export type ManagedTerminalKillResult =
   | { readonly status: 'killed'; readonly label: string; readonly sessionId: string }
   | { readonly status: 'not-found'; readonly label: string };
 
+export interface TerminalWindowCloseResult {
+  readonly uiCloseResults: readonly TerminalUiCloseResult[];
+  readonly warnings: readonly string[];
+}
+
 export interface TerminalWindowSession {
+  /** Settles after every plain target reaches authoritative terminal completion. */
+  readonly closed: Promise<TerminalWindowCloseResult>;
   close(): void;
 }
 
@@ -113,8 +135,28 @@ export interface TerminalWindowsConfig {
   options?: TerminalWindowsConfigOptions;
 }
 
-export type LinuxLauncher = (
-  target: ResolvedTerminalTarget,
-  shell: string,
-  posixCommand: string
-) => TerminalLaunchCommand;
+export type LinuxTerminalAdapterId =
+  | 'gnome-terminal'
+  | 'konsole'
+  | 'xfce4-terminal'
+  | 'xterm';
+
+export interface LinuxTerminalCapabilities {
+  readonly title: boolean;
+  readonly holdOpen: boolean;
+  readonly exactProcess: boolean;
+  readonly waitsForCommand: boolean;
+}
+
+export interface LinuxLauncher {
+  (
+    target: ResolvedTerminalTarget,
+    shell: string,
+    posixCommand: string,
+    uiOptions?: { readonly holdOpen: boolean }
+  ): TerminalLaunchCommand;
+  /** Present on built-in capability-based adapters; optional for legacy test/custom callables. */
+  readonly adapterId?: LinuxTerminalAdapterId;
+  readonly executable?: string;
+  readonly capabilities?: LinuxTerminalCapabilities;
+}

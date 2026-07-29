@@ -2,7 +2,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { InternalTerminalLaunchOptions, ResolvedTerminalTarget } from '../types.js';
+import type {
+  InternalTerminalLaunchOptions,
+  ResolvedTerminalTarget,
+  TerminalUiCloseOutcome
+} from '../types.js';
 import { appleScriptString, buildPosixCommand, posixShellQuote } from '../shell.js';
 import {
   abandonTerminalControl,
@@ -19,7 +23,7 @@ import {
   macTerminalTabState,
   waitForMacTerminalTabToSettle
 } from './macos-auto-close.js';
-import { createPosixSidecarLaunch } from './posix-sidecar.js';
+import { cleanupPosixSidecarLaunch, createPosixSidecarLaunch } from './posix-sidecar.js';
 
 export { buildCloseMacTerminalTabScript, closeMacTerminalTab } from './macos-auto-close.js';
 
@@ -60,21 +64,33 @@ class MacTerminalControllerImpl extends MarkerTerminalProcessController implemen
   constructor(
     control: ReturnType<typeof createTerminalControlPaths>,
     identity: MacTerminalIdentity,
-    private readonly idleTimeoutMs: number
+    private readonly idleTimeoutMs: number,
+    private readonly sidecarLaunch?: NonNullable<InternalTerminalLaunchOptions['posixSidecar']>
   ) {
     super(control);
     this.windowId = identity.windowId;
     this.tty = identity.tty;
   }
 
-  override close(timeoutMs = 6000): boolean {
-    const stopped = super.close(timeoutMs);
-    if (stopped && this.windowId !== null && this.tty !== null) {
-      if (waitForMacTerminalTabToSettle(this.windowId, this.tty, this.idleTimeoutMs)) {
-        closeMacTerminalTab(this.windowId, this.tty);
-      }
+  override terminalUiOutcome(autoClose: boolean): TerminalUiCloseOutcome {
+    if (!autoClose) return 'preserved';
+    if (this.windowId === null || this.tty === null) return 'unsupported';
+    let state = macTerminalTabState(this.windowId, this.tty);
+    if (state === 'missing') return 'closed';
+    if (state === 'shared') return 'refused-shared';
+    if (state === 'unknown') return 'unsupported';
+    if (state === 'busy' && !waitForMacTerminalTabToSettle(this.windowId, this.tty, this.idleTimeoutMs)) {
+      state = macTerminalTabState(this.windowId, this.tty);
+      if (state === 'missing') return 'closed';
+      if (state === 'shared') return 'refused-shared';
+      return 'host-managed';
     }
-    return stopped;
+    return closeMacTerminalTab(this.windowId, this.tty);
+  }
+
+  override dispose(): void {
+    if (this.sidecarLaunch) cleanupPosixSidecarLaunch(this.sidecarLaunch);
+    super.dispose();
   }
 }
 
@@ -94,7 +110,7 @@ function createMacTerminalLaunchCommand(
     { encoding: 'utf8', mode: 0o600, flag: 'wx' }
   );
   return {
-    command: `. ${posixShellQuote(launchScriptPath)}`,
+    command: `/bin/bash ${posixShellQuote(launchScriptPath)}`,
     launchScriptPath
   };
 }
@@ -197,14 +213,13 @@ export function launchMacTerminalController(
     stateDirectory: controllerOptions.stateDirectory ?? options.shutdownStateDirectory,
     gracefulShutdownMs: controllerOptions.gracefulShutdownMs
   });
+  let sidecarLaunch: NonNullable<InternalTerminalLaunchOptions['posixSidecar']> | undefined;
   try {
-    const controlledOptions: InternalTerminalLaunchOptions = {
-      ...options,
-      posixSidecar: createPosixSidecarLaunch(target, control, options)
-    };
+    sidecarLaunch = createPosixSidecarLaunch(target, control, options);
+    const controlledOptions: InternalTerminalLaunchOptions = { ...options, posixSidecar: sidecarLaunch };
     const identity = launchMacTerminalIdentity(target, controlledOptions, control);
     const idleTimeoutMs = options.closeWaitTimeoutMs ?? 6_000;
-    const controller = new MacTerminalControllerImpl(control, identity, idleTimeoutMs);
+    const controller = new MacTerminalControllerImpl(control, identity, idleTimeoutMs, sidecarLaunch);
     const needsDetachedAutoClose = options.autoClose
       && options.supervisorPid === undefined
       && options.controlEndpoint === undefined;
@@ -227,7 +242,7 @@ export function launchMacTerminalController(
   } catch (error) {
     if (error instanceof TerminalControllerLaunchError) throw error;
     if (error instanceof MacTerminalMayHaveLaunchedError) {
-      const controller = new MacTerminalControllerImpl(control, { windowId: null, tty: null }, 0);
+      const controller = new MacTerminalControllerImpl(control, { windowId: null, tty: null }, 0, sidecarLaunch);
       controller.requestClose();
       throw new TerminalControllerLaunchError(
         'macOS Terminal may have launched a target before identity capture failed.',
@@ -235,6 +250,7 @@ export function launchMacTerminalController(
         error
       );
     }
+    if (sidecarLaunch) cleanupPosixSidecarLaunch(sidecarLaunch);
     try {
       writeTerminalStateMarker(control, 'failed');
     } catch {

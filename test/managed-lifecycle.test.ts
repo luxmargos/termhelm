@@ -65,6 +65,10 @@ const fakePlatform = vi.hoisted(() => {
       waitUntilReady: vi.fn(() => true),
       waitUntilStopped: vi.fn(() => !model.active),
       wasForced: vi.fn(() => false),
+      terminalUiOutcome: vi.fn((autoClose: boolean) => {
+        if (autoClose) model.closeCalls += 1;
+        return autoClose ? 'closed' : 'preserved';
+      }),
       close: vi.fn(() => {
         model.closeCalls += 1;
         if (model.onRequestClose) model.onRequestClose();
@@ -93,13 +97,29 @@ const fakePlatform = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/platforms/macos.js', () => ({ launchMacTerminalController: fakePlatform.launch }));
+vi.mock('../src/platforms/macos.js', () => ({
+  launchMacTerminalController: (
+    target: unknown,
+    launchOptions: unknown,
+    controllerOptions: Record<string, unknown>
+  ) => fakePlatform.launch(target, launchOptions, controllerOptions)
+}));
 vi.mock('../src/platforms/linux.js', () => ({
-  launchLinuxTerminalController: fakePlatform.launch,
+  launchLinuxTerminalController: (
+    target: unknown,
+    _launcher: unknown,
+    launchOptions: unknown,
+    controllerOptions: Record<string, unknown>
+  ) => fakePlatform.launch(target, launchOptions, controllerOptions),
   resolveLinuxLauncher: () => () => ({ command: 'fake-terminal', args: [] })
 }));
 vi.mock('../src/platforms/windows.js', () => ({
-  launchWindowsTerminalController: fakePlatform.launch,
+  launchWindowsTerminalController: (
+    target: unknown,
+    launchOptions: unknown,
+    controllerOptions: Record<string, unknown>,
+    _backend: unknown
+  ) => fakePlatform.launch(target, launchOptions, controllerOptions),
   resolveWindowsControllerBackend: () => ({
     executable: 'powershell.exe',
     scriptPath: 'C:\\fake\\termhelm-controller.ps1'
@@ -301,7 +321,12 @@ describe('managed lifecycle state machine', () => {
       await session.ready;
       const owned = fakePlatform.controllers.find(controller => controller.sessionId === session.id)!;
       owned.finish();
-      await expect(session.closed).resolves.toMatchObject({ reason: 'target-exited' });
+      const result = await session.closed;
+      expect(result).toMatchObject({ reason: 'target-exited' });
+      expect(result.uiCloseResults).toEqual([{
+        targetId: owned.id,
+        outcome: autoClose ? 'closed' : 'preserved'
+      }]);
       expect(owned.closeCalls).toBe(autoClose ? 1 : 0);
       expect(owned.disposeCalls).toBe(1);
     }

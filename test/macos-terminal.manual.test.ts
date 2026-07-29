@@ -32,6 +32,7 @@ describe.skipIf(!manualEnabled)('manual Terminal.app identity verification', () 
       expect(controller.windowId).toBeTypeOf('number');
       expect(controller.tty).toMatch(/^\/dev\//);
       expect(controller.close(10_000)).toBe(true);
+      expect(controller.terminalUiOutcome(true)).toBe('closed');
     } finally {
       controller.requestClose();
       controller.waitUntilStopped(10_000);

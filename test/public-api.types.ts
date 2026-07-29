@@ -5,11 +5,13 @@ import type {
   ManagedTerminalLaunchOptions,
   ManagedTerminalSession,
   TerminalLaunchOptions,
-  TerminalTarget
+  TerminalTarget,
+  TerminalWindowCloseResult
 } from '../src/index.js';
 import {
   killManagedTerminalWindows,
   launchManagedTerminalWindows,
+  launchTerminalWindows,
   startManagedTerminalWindows
 } from '../src/index.js';
 
@@ -28,6 +30,8 @@ const ready: Promise<void> = session.ready;
 const closed: Promise<ManagedTerminalCloseResult> = session.closed;
 const closeResult: Promise<ManagedTerminalCloseResult> = session.close();
 const wrapperResult: Promise<void> = launchManagedTerminalWindows([target], options);
+const plainSession = launchTerminalWindows([target], plainOptions);
+const plainClosed: Promise<TerminalWindowCloseResult> = plainSession.closed;
 const killOptions: ManagedTerminalKillOptions = { timeoutMs: 5_000 };
 const killResult: Promise<ManagedTerminalKillResult> = killManagedTerminalWindows('dev', killOptions);
 
@@ -49,6 +53,7 @@ void ready;
 void closed;
 void closeResult;
 void wrapperResult;
+void plainClosed;
 void killOptions;
 void killResult;
 void missingLabel;

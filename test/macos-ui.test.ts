@@ -28,19 +28,20 @@ describe('mocked macOS Terminal UI cleanup', () => {
   });
 
   it('closes only the owned window matching both captured window ID and TTY', () => {
-    closeMacTerminalTab(731, '/dev/ttys042');
+    childProcess.spawnSync.mockReturnValue({ status: 0, stdout: 'closed\n', stderr: '', error: undefined });
+    expect(closeMacTerminalTab(731, '/dev/ttys042')).toBe('closed');
 
     expect(childProcess.spawnSync).toHaveBeenCalledTimes(1);
     const [executable, args, options] = childProcess.spawnSync.mock.calls[0]!;
     expect(executable).toBe('osascript');
-    expect(options).toEqual({ stdio: 'ignore' });
+    expect(options).toEqual({ encoding: 'utf8' });
     const script = (args as string[]).filter((_, index) => index % 2 === 1).join('\n');
     expect(script).toContain('targetWindowId to 731');
     expect(script).toContain('targetTty to "/dev/ttys042"');
     expect(script).toContain('first window whose id is targetWindowId');
     expect(script).toContain('tty of targetTab as text) is targetTty');
-    expect(script).toContain('count of tabs of targetWindow) is not 1');
-    expect(script).toContain('if busy of targetTab then return');
+    expect(script).toContain('count of tabs of targetWindow) is not 1 then return "shared"');
+    expect(script).toContain('if busy of targetTab then return "busy"');
     expect(script).toContain('close targetWindow');
     expect(script).not.toContain('custom title');
   });
@@ -139,6 +140,29 @@ describe('mocked macOS Terminal UI cleanup', () => {
     }
   });
 
+  it('reports preserved and refused-shared UI outcomes separately from process completion', () => {
+    childProcess.spawnSync
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: '731\n/dev/ttys042\n',
+        stderr: '',
+        error: undefined
+      })
+      .mockReturnValueOnce({ status: 0, stdout: 'shared\n', stderr: '', error: undefined });
+    const controller = launchMacTerminalController({
+      title: 'UI outcome',
+      cwd: process.cwd(),
+      command: 'exit 0'
+    });
+    const controlDirectory = dirname(controller.readyPath);
+    try {
+      expect(controller.terminalUiOutcome(false)).toBe('preserved');
+      expect(controller.terminalUiOutcome(true)).toBe('refused-shared');
+    } finally {
+      rmSync(controlDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('uses the live managed supervisor for auto-close instead of a detached watcher', () => {
     childProcess.spawnSync.mockReturnValue({
       status: 0,
@@ -178,7 +202,7 @@ describe('mocked macOS Terminal UI cleanup', () => {
     }
   });
 
-  it('sources managed launch logic from a private script instead of submitting multiline shell input', () => {
+  it('runs managed launch logic with bash from a private script instead of submitting multiline shell input', () => {
     childProcess.spawnSync.mockReturnValue({
       status: 0,
       stdout: '731\n/dev/ttys042\n',
@@ -202,7 +226,7 @@ describe('mocked macOS Terminal UI cleanup', () => {
       expect(options).toEqual({ encoding: 'utf8' });
       const doScript = (args as string[]).find(argument => argument.startsWith('set targetTab to do script '));
       expect(doScript).toBeDefined();
-      expect(doScript).toBe(`set targetTab to do script ". '${launchScriptPath}'"`);
+      expect(doScript).toBe(`set targetTab to do script "/bin/bash '${launchScriptPath}'"`);
       expect(doScript).not.toMatch(/[\r\n]/);
       expect(doScript).not.toContain('termhelm_runner_');
       expect(doScript).not.toContain('managed-command-sentinel');
@@ -213,6 +237,13 @@ describe('mocked macOS Terminal UI cleanup', () => {
       const launchScript = readFileSync(launchScriptPath, 'utf8');
       expect(launchScript.startsWith(`/bin/rm -f '${launchScriptPath}'\n`)).toBe(true);
       expect(launchScript).toContain(`termhelm_runner_${controller.id.replace(/-/g, '_')}`);
+      expect(launchScript).not.toContain('managed-command-sentinel');
+      expect(launchScript).not.toContain('private-value');
+      const payloadFiles = readdirSync(controlDirectory).filter(name => name.endsWith('.payload'));
+      expect(payloadFiles).toHaveLength(2);
+      for (const name of payloadFiles) {
+        expect(statSync(join(controlDirectory, name)).mode & 0o777).toBe(0o600);
+      }
     } finally {
       rmSync(controlDirectory, { recursive: true, force: true });
     }
@@ -238,6 +269,7 @@ describe('mocked macOS Terminal UI cleanup', () => {
         { controlDirectory }
       )).toThrow('Failed to launch Terminal: osascript is unavailable');
       expect(readdirSync(controlDirectory).some(name => name.endsWith('.launch.sh'))).toBe(false);
+      expect(readdirSync(controlDirectory).some(name => name.endsWith('.payload'))).toBe(false);
     } finally {
       rmSync(controlDirectory, { recursive: true, force: true });
     }

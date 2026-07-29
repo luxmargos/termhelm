@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const childProcessActivity = vi.hoisted(() => ({
@@ -44,7 +45,7 @@ describe('Windows controller backend launch boundary', () => {
     const controller = launchWindowsTerminalController(
       { title: 'display only', cwd: directory, command: 'ver >nul' },
       { exitAfterCommand: true },
-      { stateDirectory: directory },
+      { stateDirectory: join(directory, 'state') },
       { executable: 'pwsh', scriptPath }
     );
 
@@ -54,6 +55,8 @@ describe('Windows controller backend launch boundary', () => {
     onError!(new Error('selected controller failed after spawn'));
     expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
     expect(controller.controllerPid).toBe(4321);
+    expect(controller.terminalUiOutcome(false)).toBe('host-managed');
+    expect(controller.terminalUiOutcome(true)).toBe('host-managed');
   });
 
   it('does not retry another PowerShell host when spawning the selected host throws', () => {
@@ -65,10 +68,96 @@ describe('Windows controller backend launch boundary', () => {
     expect(() => launchWindowsTerminalController(
       { title: 'display only', cwd: directory, command: 'ver >nul' },
       { exitAfterCommand: true },
-      { stateDirectory: directory },
+      { stateDirectory: join(directory, 'state') },
       { executable: 'pwsh', scriptPath: join(directory, 'termhelm-controller.ps1') }
     )).toThrow('spawn failed');
     expect(childProcessActivity.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects case-insensitive duplicate Windows environment names', () => {
+    childProcessActivity.spawn.mockReturnValue({ pid: 4329, once: vi.fn(), unref: vi.fn() });
+    const directory = temporaryDirectory();
+    expect(() => launchWindowsTerminalController({
+      title: 'duplicate environment',
+      cwd: directory,
+      command: 'ver >nul',
+      env: { Path: 'first', PATH: 'second' }
+    }, {}, { stateDirectory: join(directory, 'state') }, {
+      executable: 'powershell.exe',
+      scriptPath: join(directory, 'termhelm-controller.ps1')
+    })).toThrow('case-insensitive');
+    expect(childProcessActivity.spawn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== 'win32')('keeps default plain launch state out of a deliberately shared TEMP parent', () => {
+    childProcessActivity.spawn.mockReturnValue({ pid: 4330, once: vi.fn(), unref: vi.fn() });
+    const sharedParent = temporaryDirectory();
+    const powershell = join(
+      process.env.SystemRoot!,
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+    );
+    const broaden = String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [Environment]::GetEnvironmentVariable('TERMHELM_TEST_SHARED_PARENT')
+$acl = Get-Acl -LiteralPath $path
+$everyone = New-Object Security.Principal.SecurityIdentifier('S-1-1-0')
+$rule = New-Object Security.AccessControl.FileSystemAccessRule($everyone, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+`;
+    const broadened = spawnSync(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive',
+      '-EncodedCommand', Buffer.from(broaden, 'utf16le').toString('base64')
+    ], {
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, TERMHELM_TEST_SHARED_PARENT: sharedParent }
+    });
+    expect(broadened.error).toBeUndefined();
+    expect(broadened.status, broadened.stderr).toBe(0);
+
+    const controller = launchWindowsTerminalController({
+      title: 'plain ACL',
+      cwd: sharedParent,
+      command: 'ver >nul',
+      env: { TERMHELM_SECRET: 'private' },
+      exitMessage: 'complete'
+    }, {}, {}, {
+      executable: 'powershell.exe',
+      scriptPath: join(sharedParent, 'termhelm-controller.ps1')
+    });
+    const controlDirectory = dirname(controller.readyPath);
+    temporaryDirectories.push(controlDirectory);
+    expect(controlDirectory.startsWith(sharedParent)).toBe(false);
+    const paths = [
+      controlDirectory,
+      ...readdirSync(controlDirectory).map(name => join(controlDirectory, name))
+    ];
+    const verify = String.raw`
+$ErrorActionPreference = 'Stop'
+$paths = @([Environment]::GetEnvironmentVariable('TERMHELM_TEST_ACL_PATHS') | ConvertFrom-Json)
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$system = 'S-1-5-18'
+foreach ($path in $paths) {
+  $acl = Get-Acl -LiteralPath $path
+  if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user) { throw "Owner mismatch: $path" }
+  if ($path -eq $paths[0] -and -not $acl.AreAccessRulesProtected) { throw "Control ACL is not protected: $path" }
+  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    $sid = $rule.IdentityReference.Value
+    if ($sid -ne $user -and $sid -ne $system) { throw "Unexpected ACL principal: $sid on $path" }
+  }
+}
+`;
+    const verified = spawnSync(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive',
+      '-EncodedCommand', Buffer.from(verify, 'utf16le').toString('base64')
+    ], {
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, TERMHELM_TEST_ACL_PATHS: JSON.stringify(paths) }
+    });
+    expect(verified.error).toBeUndefined();
+    expect(verified.status, verified.stderr).toBe(0);
   });
 
   it('launches only the PowerShell backend selected during preflight', () => {
@@ -87,7 +176,7 @@ describe('Windows controller backend launch boundary', () => {
         env: { TEMP: '-target-only-temp' }
       },
       { exitAfterCommand: true },
-      { stateDirectory: directory },
+      { stateDirectory: join(directory, 'state') },
       { executable: 'powershell.exe', scriptPath }
     );
 

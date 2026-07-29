@@ -32,6 +32,12 @@ function temporaryDirectory(): string {
   return directory;
 }
 
+function payloadFromLaunch(
+  launch: ReturnType<typeof createPosixSidecarLaunch>
+): ReturnType<typeof parsePosixSidecarPayload> {
+  return parsePosixSidecarPayload(readFileSync(launch.payloadPath, 'utf8').trim());
+}
+
 function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -126,7 +132,12 @@ function launchWrapper(
   shellPath = process.env.SHELL,
   providedControl?: TerminalControlPaths,
   enableErrexit = false
-): { child: ChildProcess; control: TerminalControlPaths; stderr: () => string } {
+): {
+  child: ChildProcess;
+  control: TerminalControlPaths;
+  sidecarLaunch: NonNullable<InternalTerminalLaunchOptions['posixSidecar']>;
+  stderr: () => string;
+} {
   const control = providedControl ?? createTerminalControlPaths({
     stateDirectory: temporaryDirectory(),
     gracefulShutdownMs
@@ -153,7 +164,7 @@ function launchWrapper(
   childProcesses.push(child);
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-  return { child, control, stderr: () => stderr };
+  return { child, control, sidecarLaunch: options.posixSidecar!, stderr: () => stderr };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -188,9 +199,92 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', () => {
+  it('stores sensitive runner data only in private payload files and sanitizes finalizer state', () => {
+    const secretCommand = 'printf termhelm-command-secret';
+    const secretEnvironment = 'termhelm-environment-secret';
+    const secretToken = 'a'.repeat(43);
+    const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
+    const launch = createPosixSidecarLaunch({
+      title: 'private payload',
+      cwd: temporaryDirectory(),
+      command: secretCommand,
+      env: { TERMHELM_SECRET: secretEnvironment }
+    }, control, {
+      exitAfterCommand: true,
+      controlEndpoint: join('/tmp', `.tw-${randomUUID()}.sock`),
+      authenticationToken: secretToken
+    });
+
+    expect(statSync(launch.payloadPath).mode & 0o777).toBe(0o600);
+    expect(statSync(launch.finalizerPayloadPath).mode & 0o777).toBe(0o600);
+    expect(launch.payloadPath).not.toContain(secretCommand);
+    expect(launch.finalizerPayloadPath).not.toContain(secretToken);
+    expect(payloadFromLaunch(launch)).toMatchObject({
+      command: secretCommand,
+      env: { TERMHELM_SECRET: secretEnvironment },
+      authenticationToken: secretToken
+    });
+    const finalizer = parsePosixSidecarPayload(readFileSync(launch.finalizerPayloadPath, 'utf8').trim());
+    expect(finalizer.command).toBe('');
+    expect(finalizer.env).toBeUndefined();
+    expect(finalizer.authenticationToken).toBeUndefined();
+  });
+
+  it('keeps the target command out of shell process argv', async () => {
+    const markerPath = join(temporaryDirectory(), 'argv-ready');
+    const secret = `termhelm-argv-secret-${randomUUID()}`;
+    const target: TerminalTarget = {
+      title: 'argv privacy',
+      cwd: temporaryDirectory(),
+      command: `secret=${posixShellQuote(secret)}; : > ${posixShellQuote(markerPath)}; while :; do sleep 1; done`
+    };
+    const { child, control, stderr } = launchWrapper(target);
+
+    await waitFor(() => existsSync(control.readyPath) && existsSync(markerPath));
+    const processArguments = execFileSync('ps', ['-axo', 'args='], { encoding: 'utf8' });
+    expect(processArguments).not.toContain(secret);
+    rmSync(control.targetTokenPath);
+    await waitFor(() => existsSync(control.stoppedPath));
+    await waitForExit(child);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+  });
+
+  it('unlinks the sensitive runner payload before readiness and finalizer state after completion', async () => {
+    const target: TerminalTarget = {
+      title: 'payload lifetime',
+      cwd: temporaryDirectory(),
+      command: `${posixShellQuote(process.execPath)} -e ${posixShellQuote('setInterval(() => {}, 1000)')}`
+    };
+    const { child, control, sidecarLaunch, stderr } = launchWrapper(target);
+
+    await waitFor(() => existsSync(control.readyPath));
+    expect(existsSync(sidecarLaunch.payloadPath)).toBe(false);
+    expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(true);
+    rmSync(control.targetTokenPath);
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(143);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(false);
+  });
+
+  it('runs target commands under a POSIX login shell without changing the controller wrapper shell', async () => {
+    const outputPath = join(temporaryDirectory(), 'shell-output');
+    const target: TerminalTarget = {
+      title: 'target shell',
+      cwd: temporaryDirectory(),
+      command: `printf '%s' "$0" > ${posixShellQuote(outputPath)}`
+    };
+    const { child, control, stderr } = launchWrapper(target, 250, {}, '/bin/sh');
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(0);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(readFileSync(outputPath, 'utf8')).toMatch(/\.command$/);
+  });
+
   it('acknowledges natural completion only after the wrapper observes an empty group', async () => {
     const target: TerminalTarget = { title: 'duplicate title', cwd: temporaryDirectory(), command: 'exit 0' };
-    const { child, control, stderr } = launchWrapper(target);
+    const { child, control, sidecarLaunch, stderr } = launchWrapper(target);
 
     await waitFor(() => existsSync(control.stoppedPath));
     expect(await waitForExit(child)).toBe(0);
@@ -199,6 +293,18 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(existsSync(control.stoppingPath)).toBe(false);
     expect(existsSync(control.forcedPath)).toBe(false);
     expect(statSync(control.stoppedPath).mode & 0o077).toBe(0);
+    expect(existsSync(sidecarLaunch.payloadPath)).toBe(false);
+    expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(false);
+  });
+
+  it('does not force a naturally completed empty group when the graceful delay is zero', async () => {
+    const target: TerminalTarget = { title: 'zero delay', cwd: temporaryDirectory(), command: 'exit 0' };
+    const { child, control, stderr } = launchWrapper(target, 0);
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(0);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(existsSync(control.forcedPath)).toBe(false);
   });
 
   it('finalizes a nonzero runner status even when the invoking shell has errexit enabled', async () => {
@@ -307,7 +413,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     const server = await openManagedControlServer({
       endpoint,
       authenticationToken,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] }),
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }),
       sessionId: control.sessionId,
       controllerTargetIds: [control.id]
     });
@@ -381,7 +487,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     const target: TerminalTarget = { title: 'identity', cwd: directory, command: 'exit 0' };
     const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
     const launch = createPosixSidecarLaunch(target, control, { exitAfterCommand: true });
-    const payload = parsePosixSidecarPayload(launch.encodedPayload);
+    const payload = payloadFromLaunch(launch);
     writeFileSync(control.readyPath, 'ready\n', { mode: 0o600 });
     const killSpy = vi.spyOn(process, 'kill');
 
@@ -399,7 +505,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     const target: TerminalTarget = { title: 'failed', cwd: directory, command: 'exit 0' };
     const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
     const launch = createPosixSidecarLaunch(target, control, { exitAfterCommand: true });
-    const payload = parsePosixSidecarPayload(launch.encodedPayload);
+    const payload = payloadFromLaunch(launch);
     writeFileSync(control.readyPath, 'ready\n', { mode: 0o600 });
 
     const witness = spawn('/bin/sh', ['-c', 'exit 0'], { detached: true, stdio: 'ignore' });
@@ -434,7 +540,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
         controlEndpoint: endpoint,
         authenticationToken: 'a'.repeat(43)
       });
-      const payload = parsePosixSidecarPayload(launch.encodedPayload);
+      const payload = payloadFromLaunch(launch);
       writeFileSync(control.readyPath, 'ready\n', { mode: 0o600 });
       writeFileSync(
         `${control.stoppedPath}.runner-complete`,
@@ -468,7 +574,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
       exitAfterCommand: true,
       closeWaitTimeoutMs: 40
     });
-    const payload = parsePosixSidecarPayload(launch.encodedPayload);
+    const payload = payloadFromLaunch(launch);
     const currentProcessGroupId = Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], {
       encoding: 'utf8'
     }).trim());
@@ -487,10 +593,9 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     const fallbackCommandPath = join(directory, 'fallback-command-ran');
     const bashEnvironmentPath = join(directory, 'fallback-env.sh');
     writeFileSync(bashEnvironmentPath, [
-      'case "$-" in',
-      `  *c*) ;;`,
-      `  *) printf '%s\\n' "$$" > ${posixShellQuote(fallbackPidPath)} ;;`,
-      'esac'
+      'if [ "${TERMHELM_INTERNAL_FALLBACK_SHELL:-}" = 1 ]; then',
+      `  printf '%s\\n' "$$" > ${posixShellQuote(fallbackPidPath)}`,
+      'fi'
     ].join('\n'));
     const target: TerminalTarget = {
       title: 'fallback',

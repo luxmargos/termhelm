@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -267,6 +267,46 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
         expect(controller.close(12_000)).toBe(true);
         waitForFileLines(stoppedPath, 3, 12_000);
         expect(controller.wasForced()).toBe(false);
+        controller.dispose();
+      },
+      30_000
+    );
+
+    it.skipIf(!available)(
+      `supports percent-sign state paths and UTF-8 command/environment transport with ${backend.name}`,
+      () => {
+        const root = temporaryDirectory();
+        const directory = join(root, 'tmp-%literal%-한글');
+        mkdirSync(directory);
+        const commandScriptPath = join(directory, '명령.cjs');
+        const outputPath = join(directory, '성공.txt');
+        const codePagePath = join(directory, 'code-page.txt');
+        const expected = '환경-값-✓';
+        writeFileSync(commandScriptPath, [
+          "const { execFileSync } = require('node:child_process');",
+          "const { writeFileSync } = require('node:fs');",
+          `writeFileSync(${JSON.stringify(outputPath)}, process.env.TERMHELM_UNICODE_VALUE, 'utf8');`,
+          `writeFileSync(${JSON.stringify(codePagePath)}, execFileSync(process.env.ComSpec, ['/d', '/c', 'chcp'], { encoding: 'utf8' }), 'utf8');`
+        ].join('\r\n'), 'utf8');
+        const controller = launchWindowsTerminalController({
+          title: '유니코드 표시 제목',
+          cwd: directory,
+          command: `${windowsQuote(process.execPath)} ${windowsQuote(commandScriptPath)}`,
+          env: { TERMHELM_UNICODE_VALUE: expected },
+          exitMessage: '완료 ✓'
+        }, {
+          exitAfterCommand: true
+        }, {
+          stateDirectory: join(directory, 'state')
+        }, {
+          executable: backend.executable,
+          scriptPath
+        });
+
+        expect(controller.waitUntilReady(12_000)).toBe(true);
+        expect(controller.waitUntilStopped(12_000)).toBe(true);
+        expect(readFileSync(outputPath, 'utf8')).toBe(expected);
+        expect(readFileSync(codePagePath, 'utf8')).toMatch(/65001/);
         controller.dispose();
       },
       30_000

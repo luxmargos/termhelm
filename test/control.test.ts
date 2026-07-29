@@ -80,7 +80,7 @@ describe('managed control channel', () => {
     const server = await openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] }),
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }),
       sessionId,
       controllerTargetIds: [targetId],
       onControllerState
@@ -108,6 +108,30 @@ describe('managed control channel', () => {
     await disconnected;
   });
 
+  it('normalizes legacy close results without uiCloseResults for upgrade compatibility', async () => {
+    const path = endpoint();
+    const server = await openManagedControlServer({
+      endpoint: path,
+      authenticationToken: TOKEN,
+      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] } as never)
+    });
+    try {
+      await expect(requestManagedSessionStop({
+        endpoint: path,
+        authenticationToken: TOKEN,
+        requestId: randomUUID(),
+        timeoutMs: 1_000
+      })).resolves.toEqual({
+        reason: 'replaced',
+        forcedTargetIds: [],
+        uiCloseResults: [],
+        warnings: []
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('closes a controller watch when its state handler throws synchronously', async () => {
     const path = endpoint();
     const sessionId = randomUUID();
@@ -115,7 +139,7 @@ describe('managed control channel', () => {
     const server = await openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] }),
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }),
       sessionId,
       controllerTargetIds: [targetId],
       onControllerState: () => {
@@ -142,7 +166,7 @@ describe('managed control channel', () => {
     const server = await openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] }),
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }),
       sessionId,
       controllerTargetIds: [targetId]
     });
@@ -170,7 +194,7 @@ describe('managed control channel', () => {
 
   it('authenticates and acknowledges exactly one shutdown request', async () => {
     const path = endpoint();
-    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], warnings: [] }));
+    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }));
     const server = await openManagedControlServer({ endpoint: path, authenticationToken: TOKEN, onStop });
     try {
       await expect(requestManagedSessionStop({
@@ -179,7 +203,7 @@ describe('managed control channel', () => {
         requestId: randomUUID(),
         reason: 'replaced',
         timeoutMs: 1_000
-      })).resolves.toEqual({ reason: 'replaced', forcedTargetIds: [], warnings: [] });
+      })).resolves.toEqual({ reason: 'replaced', forcedTargetIds: [], uiCloseResults: [], warnings: [] });
       expect(onStop).toHaveBeenCalledOnce();
       expect(onStop).toHaveBeenCalledWith('replaced');
     } finally {
@@ -195,7 +219,7 @@ describe('managed control channel', () => {
       authenticationToken: TOKEN,
       onStop: async reason => {
         await new Promise(resolve => setTimeout(resolve, 75));
-        return { reason, forcedTargetIds: [], warnings: [] };
+        return { reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] };
       }
     });
     try {
@@ -212,7 +236,7 @@ describe('managed control channel', () => {
 
   it('rejects an invalid authentication token without calling the handler', async () => {
     const path = endpoint();
-    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], warnings: [] }));
+    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }));
     const server = await openManagedControlServer({ endpoint: path, authenticationToken: TOKEN, onStop });
     try {
       await expect(requestManagedSessionStop({
@@ -229,7 +253,7 @@ describe('managed control channel', () => {
 
   it('rejects malformed, oversized, and pipelined request frames', async () => {
     const path = endpoint();
-    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], warnings: [] }));
+    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }));
     const server = await openManagedControlServer({ endpoint: path, authenticationToken: TOKEN, onStop });
     try {
       await expect(rawExchange(path, 'not-json\n')).resolves.toMatchObject({ type: 'error', message: 'Invalid control request.' });
@@ -256,7 +280,7 @@ describe('managed control channel', () => {
 
   it('rejects an authenticated request with an invalid reason', async () => {
     const path = endpoint();
-    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], warnings: [] }));
+    const onStop = vi.fn(async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] }));
     const server = await openManagedControlServer({ endpoint: path, authenticationToken: TOKEN, onStop });
     const requestId = randomUUID();
     try {
@@ -278,7 +302,7 @@ describe('managed control channel', () => {
     const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
     const onStop = vi.fn(async reason => {
       await stopGate;
-      return { reason, forcedTargetIds: [], warnings: [] };
+      return { reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] };
     });
     const server = await openManagedControlServer({ endpoint: path, authenticationToken: TOKEN, onStop });
     const socket = createConnection(path);
@@ -314,7 +338,7 @@ describe('managed control channel', () => {
     const invalidServer = await openManagedControlServer({
       endpoint: invalidPath,
       authenticationToken: TOKEN,
-      onStop: async () => ({ reason: 'replaced', forcedTargetIds: ['not-a-uuid'], warnings: [] })
+      onStop: async () => ({ reason: 'replaced', forcedTargetIds: ['not-a-uuid'], uiCloseResults: [], warnings: [] })
     });
     try {
       await expect(requestManagedSessionStop({
@@ -395,7 +419,7 @@ describe('managed control channel', () => {
     const server = await openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] })
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] })
     });
     const idleClient = createConnection(path);
     idleClient.on('error', () => undefined);
@@ -414,7 +438,7 @@ describe('managed control channel', () => {
     const server = await openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] })
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] })
     });
     expect(statSync(path).mode & 0o777).toBe(0o600);
     await server.close();
@@ -423,7 +447,7 @@ describe('managed control channel', () => {
     await expect(openManagedControlServer({
       endpoint: path,
       authenticationToken: TOKEN,
-      onStop: async reason => ({ reason, forcedTargetIds: [], warnings: [] })
+      onStop: async reason => ({ reason, forcedTargetIds: [], uiCloseResults: [], warnings: [] })
     })).rejects.toThrow('Refusing to remove a non-socket');
     expect(readFileSync(path, 'utf8')).toBe('preserve me');
     rmSync(path, { force: true });

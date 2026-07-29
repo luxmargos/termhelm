@@ -35,7 +35,11 @@ import {
   type ManagedSessionRecordV2,
   type ManagedTargetState
 } from './manager.js';
-import { launchLinuxTerminalController, resolveLinuxLauncher } from './platforms/linux.js';
+import {
+  launchLinuxTerminalController,
+  LINUX_TERMINAL_REQUIREMENT,
+  resolveLinuxLauncher
+} from './platforms/linux.js';
 import { launchMacTerminalController } from './platforms/macos.js';
 import {
   launchWindowsTerminalController,
@@ -57,7 +61,9 @@ import type {
   ManagedTerminalLaunchOptions,
   ManagedTerminalSession,
   ResolvedTerminalTarget,
-  TerminalTarget
+  TerminalTarget,
+  TerminalUiCloseOutcome,
+  TerminalUiCloseResult
 } from './types.js';
 
 export const DEFAULT_MANAGED_SHUTDOWN_DELAY_MS = 2_500;
@@ -80,7 +86,7 @@ interface TargetOwnership {
   readonly controllerOptions: TerminalControllerOptions;
   controller?: TerminalProcessController;
   neverLaunched: boolean;
-  uiClosed: boolean;
+  uiOutcome?: TerminalUiCloseOutcome;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -139,7 +145,7 @@ function preflightManagedBackend(): ManagedPlatformBackend {
   }
   if (process.platform === 'linux') {
     const launcher = resolveLinuxLauncher();
-    if (!launcher) throw new Error('No supported Linux terminal emulator was found.');
+    if (!launcher) throw new Error(LINUX_TERMINAL_REQUIREMENT);
     return { linuxLauncher: launcher, windowsController: null };
   }
   if (process.platform !== 'darwin') {
@@ -449,7 +455,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
         gracefulShutdownMs: this.shutdownDelayMs
       },
       neverLaunched: true,
-      uiClosed: false
+      uiOutcome: undefined
     }));
     this.ready = this.readyDeferred.promise;
     this.closed = this.closedDeferred.promise;
@@ -723,17 +729,22 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
   }
 
   private async waitForTargetReadiness(targetId: string, deadline: number): Promise<void> {
+    const launchDiagnostic = (): string => {
+      const controller = this.ownership.find(target => target.id === targetId)?.controller;
+      const diagnostic = controller?.launchDiagnostic?.();
+      return diagnostic ? ` Launcher diagnostic: ${diagnostic}` : '';
+    };
     while (true) {
       if (this.requestedStopReason) {
         throw new Error(`Managed terminal target ${targetId} was closed before readiness.`);
       }
       if (readManagedTargetMarker(this.id, targetId, 'failed') !== null) {
-        throw new Error(`Managed terminal target ${targetId} failed before readiness.`);
+        throw new Error(`Managed terminal target ${targetId} failed before readiness.${launchDiagnostic()}`);
       }
       if (readManagedTargetMarker(this.id, targetId, 'ready') !== null) return;
       const remaining = remainingTime(deadline);
       if (remaining === 0) {
-        throw new Error(`Managed terminal target ${targetId} did not acknowledge readiness.`);
+        throw new Error(`Managed terminal target ${targetId} did not acknowledge readiness.${launchDiagnostic()}`);
       }
       await delay(Math.min(MARKER_POLL_INTERVAL_MS, remaining));
     }
@@ -745,7 +756,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
       throw new Error(`Refusing to finish managed terminal session ${this.id} before all targets terminate.`);
     }
 
-    this.closeConfirmedTargetUis();
+    this.recordConfirmedTargetUiOutcomes();
     const warnings: string[] = [...this.lifecycleWarnings];
     const forcedTargetIds: string[] = [];
     for (const ownedTarget of this.ownership) {
@@ -762,9 +773,14 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
     }
 
     this.state = reason === 'launch-failed' ? 'failed' : 'stopped';
+    const uiCloseResults: TerminalUiCloseResult[] = this.ownership.map(target => ({
+      targetId: target.id,
+      outcome: target.uiOutcome ?? 'unsupported'
+    }));
     const result: ManagedTerminalCloseResult = {
       reason,
       forcedTargetIds,
+      uiCloseResults,
       warnings
     };
     this.closedResult = result;
@@ -776,10 +792,9 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
     return result;
   }
 
-  private closeConfirmedTargetUis(): void {
-    if (!this.options.autoClose) return;
+  private recordConfirmedTargetUiOutcomes(): void {
     for (const ownedTarget of this.ownership) {
-      if (ownedTarget.uiClosed || !ownedTarget.controller) continue;
+      if (ownedTarget.uiOutcome !== undefined || !ownedTarget.controller) continue;
       let terminated = false;
       try {
         terminated = this.targetConfirmedTerminated(ownedTarget.id);
@@ -788,8 +803,10 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
       }
       if (!terminated) continue;
       try {
-        if (ownedTarget.controller.close(0)) ownedTarget.uiClosed = true;
+        ownedTarget.uiOutcome = ownedTarget.controller.terminalUiOutcome?.(this.options.autoClose ?? false)
+          ?? (this.options.autoClose ? 'unsupported' : 'preserved');
       } catch (error) {
+        ownedTarget.uiOutcome = 'unsupported';
         this.lifecycleWarnings.push(`Target ${ownedTarget.id} UI-close warning: ${errorMessage(error)}`);
       }
     }
@@ -868,7 +885,7 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
 
   private async monitorNaturalTermination(): Promise<void> {
     while (this.state === 'ready') {
-      this.closeConfirmedTargetUis();
+      this.recordConfirmedTargetUiOutcomes();
       if (this.allTargetsConfirmedTerminated()) {
         await this.stop('target-exited');
         return;

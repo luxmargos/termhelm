@@ -10,6 +10,14 @@ const MAX_CLOSE_RESULT_ITEMS = 1_000;
 const CONTROL_AUTHENTICATION_TIMEOUT_MS = 5_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AUTHENTICATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
+const UI_CLOSE_OUTCOMES = new Set([
+  'closed',
+  'preserved',
+  'host-managed',
+  'refused-shared',
+  'cancelled',
+  'unsupported'
+]);
 const CLOSE_REASONS = new Set<ManagedTerminalCloseReason>([
   'closed',
   'replaced',
@@ -101,22 +109,54 @@ function isCloseReason(value: unknown): value is ManagedTerminalCloseReason {
   return typeof value === 'string' && CLOSE_REASONS.has(value as ManagedTerminalCloseReason);
 }
 
-function parseCloseResult(value: unknown): ManagedTerminalCloseResult {
+function parseCloseResult(
+  value: unknown,
+  expectedTargetIds?: readonly string[]
+): ManagedTerminalCloseResult {
+  const uiCloseResults = isObject(value) && value.uiCloseResults === undefined ? [] : isObject(value) ? value.uiCloseResults : undefined;
   if (
     !isObject(value) ||
     !isCloseReason(value.reason) ||
     !Array.isArray(value.forcedTargetIds) ||
+    !Array.isArray(uiCloseResults) ||
     !Array.isArray(value.warnings) ||
     value.forcedTargetIds.length > MAX_CLOSE_RESULT_ITEMS ||
+    uiCloseResults.length > MAX_CLOSE_RESULT_ITEMS ||
     value.warnings.length > MAX_CLOSE_RESULT_ITEMS ||
     !value.forcedTargetIds.every(item => typeof item === 'string' && UUID_PATTERN.test(item)) ||
+    !uiCloseResults.every(item =>
+      isObject(item) &&
+      typeof item.targetId === 'string' &&
+      UUID_PATTERN.test(item.targetId) &&
+      typeof item.outcome === 'string' &&
+      UI_CLOSE_OUTCOMES.has(item.outcome)
+    ) ||
     !value.warnings.every(item => typeof item === 'string' && item.length <= MAX_CONTROL_ERROR_LENGTH)
   ) {
     throw new Error('Managed terminal close result was invalid.');
   }
+  const forcedIds = value.forcedTargetIds as string[];
+  const uiResults = uiCloseResults as Array<{ targetId: string; outcome: ManagedTerminalCloseResult['uiCloseResults'][number]['outcome'] }>;
+  const forcedSet = new Set(forcedIds);
+  const uiTargetSet = new Set(uiResults.map(item => item.targetId));
+  if (forcedSet.size !== forcedIds.length || uiTargetSet.size !== uiResults.length) {
+    throw new Error('Managed terminal close result contained duplicate target entries.');
+  }
+  if (expectedTargetIds !== undefined) {
+    const expected = new Set(expectedTargetIds);
+    if (
+      forcedIds.some(id => !expected.has(id)) ||
+      uiResults.some(item => !expected.has(item.targetId)) ||
+      uiTargetSet.size !== expected.size ||
+      [...expected].some(id => !uiTargetSet.has(id))
+    ) {
+      throw new Error('Managed terminal close result did not match the registered target set.');
+    }
+  }
   const result: ManagedTerminalCloseResult = {
     reason: value.reason,
-    forcedTargetIds: value.forcedTargetIds,
+    forcedTargetIds: forcedIds,
+    uiCloseResults: uiResults,
     warnings: value.warnings
   };
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MAX_CONTROL_MESSAGE_BYTES - 1_024) {
@@ -373,7 +413,11 @@ export async function openManagedControlServer(input: {
         .then(
           result => {
             try {
-              respond({ type: 'stopped', requestId: request.requestId, result: parseCloseResult(result) });
+              respond({
+                type: 'stopped',
+                requestId: request.requestId,
+                result: parseCloseResult(result, input.controllerTargetIds)
+              });
             } catch {
               respond({ type: 'error', requestId: request.requestId, message: 'Managed terminal shutdown returned an invalid result.' });
             }

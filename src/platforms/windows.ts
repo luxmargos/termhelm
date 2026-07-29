@@ -7,7 +7,12 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { InternalTerminalLaunchOptions, ResolvedTerminalTarget, TerminalTarget } from '../types.js';
+import type {
+  InternalTerminalLaunchOptions,
+  ResolvedTerminalTarget,
+  TerminalTarget,
+  TerminalUiCloseOutcome
+} from '../types.js';
 import {
   abandonTerminalControl,
   createTerminalControlPaths,
@@ -16,6 +21,7 @@ import {
   type TerminalControllerOptions,
   type TerminalProcessController
 } from './controller.js';
+import { revalidatePrivateWindowsDirectory } from './windows-security.js';
 
 const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'termhelm-controller.ps1';
 const WINDOWS_CONTROLLER_PROBE_TIMEOUT_MS = 10_000;
@@ -47,6 +53,12 @@ class WindowsTerminalControllerImpl extends MarkerTerminalProcessController impl
   constructor(control: ReturnType<typeof createTerminalControlPaths>, controllerPid: number) {
     super(control);
     this.controllerPid = controllerPid;
+  }
+
+  override terminalUiOutcome(_autoClose: boolean): TerminalUiCloseOutcome {
+    // The helper owns an exact dedicated console and never selects by title,
+    // but Windows console-host policy owns final visual disappearance.
+    return 'host-managed';
   }
 }
 
@@ -174,10 +186,28 @@ export function resolveWindowsControllerBackend(
 }
 
 function validateWindowsEnvironment(env: Record<string, string> | undefined): void {
+  const names = new Map<string, string>();
   for (const [key, value] of Object.entries(env ?? {})) {
     if (key.length === 0 || /[=\0]/.test(key)) throw new Error(`Invalid Windows environment variable name: ${key}`);
     if (/\0/.test(value)) throw new Error(`Windows environment variable ${key} contains NUL.`);
+    const folded = key.toUpperCase();
+    const previous = names.get(folded);
+    if (previous !== undefined) {
+      throw new Error(`Windows environment variable names are case-insensitive: ${previous} conflicts with ${key}.`);
+    }
+    names.set(folded, key);
   }
+}
+
+function revalidateWindowsControlDirectory(
+  control: ReturnType<typeof createTerminalControlPaths>,
+  description: string
+): void {
+  if (control.windowsDirectoryIdentity === undefined) return;
+  revalidatePrivateWindowsDirectory(control.directory, control.windowsDirectoryIdentity, {
+    protectedRoot: control.ownsDirectory,
+    description
+  });
 }
 
 function createWindowsCommandFile(
@@ -185,9 +215,11 @@ function createWindowsCommandFile(
   options: InternalTerminalLaunchOptions,
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
+  revalidateWindowsControlDirectory(control, 'the terminal control directory before command-file creation');
   const commandFile = join(control.directory, `${control.id}.cmd`);
   const lines = [
     '@echo off',
+    'chcp 65001 >nul',
     target.command,
     'set "TERMHELM_EXIT_CODE=%ERRORLEVEL%"',
     'if defined TERMHELM_EXIT_MESSAGE_FILE (',
@@ -206,6 +238,7 @@ function createWindowsExitMessageFile(
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
   if (exitMessage === undefined) return '';
+  revalidateWindowsControlDirectory(control, 'the terminal control directory before exit-message creation');
   const messageFile = join(control.directory, `${control.id}.exit-message.txt`);
   writeFileSync(messageFile, `${exitMessage}\r\n`, { encoding: 'utf8', mode: 0o600 });
   return messageFile;
@@ -248,6 +281,7 @@ function createWindowsControllerPayloadFile(
   values: WindowsControllerArgumentValues,
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
+  revalidateWindowsControlDirectory(control, 'the terminal control directory before payload creation');
   const payloadPath = join(
     control.directory,
     `${control.sessionId}.${control.id}.controller.json`

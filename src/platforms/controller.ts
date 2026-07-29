@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import type { TerminalUiCloseOutcome } from '../types.js';
+import {
+  ensurePrivateWindowsDirectory,
+  privateWindowsDirectoryIdentity,
+  revalidatePrivateWindowsDirectory
+} from './windows-security.js';
 
 const DEFAULT_READY_TIMEOUT_MS = 6000;
 const DEFAULT_STOP_TIMEOUT_MS = 6000;
@@ -18,6 +24,7 @@ export interface TerminalControlPaths {
   forcedPath: string;
   gracefulShutdownMs: number;
   ownsDirectory: boolean;
+  windowsDirectoryIdentity?: string;
 }
 
 export interface TerminalControllerOptions {
@@ -48,6 +55,10 @@ export interface TerminalProcessController {
   waitUntilReady(timeoutMs?: number): boolean;
   waitUntilStopped(timeoutMs?: number): boolean;
   wasForced(): boolean;
+  /** Non-authoritative platform launch diagnostic, when available. */
+  launchDiagnostic?(): string | null;
+  /** UI lifecycle is separate from process-tree termination evidence. */
+  terminalUiOutcome?(autoClose: boolean): TerminalUiCloseOutcome;
   close(timeoutMs?: number): boolean;
   dispose(): void;
 }
@@ -136,15 +147,42 @@ function validateControllerId(value: string, description: string): string {
   return value.toLowerCase();
 }
 
+function defaultTerminalControlRoot(): string {
+  if (process.platform !== 'win32') return tmpdir();
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) {
+    throw new Error('Cannot create private Windows terminal state because LOCALAPPDATA is unavailable.');
+  }
+  return join(localAppData, 'TermHelm', 'plain');
+}
+
 export function createTerminalControlPaths(options: TerminalControllerOptions = {}): TerminalControlPaths {
   const id = validateControllerId(options.id ?? randomUUID(), 'target ID');
   const sessionId = validateControllerId(options.sessionId ?? randomUUID(), 'session ID');
-  const root = options.stateDirectory ?? tmpdir();
+  const root = options.stateDirectory ?? defaultTerminalControlRoot();
   const ownsDirectory = options.controlDirectory === undefined;
   const directory = options.controlDirectory ?? join(root, `termhelm-target-${id}`);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  mkdirSync(directory, { recursive: !ownsDirectory, mode: 0o700 });
+  if (process.platform === 'win32') {
+    if (ownsDirectory) {
+      ensurePrivateWindowsDirectory(root, {
+        protectedRoot: true,
+        description: 'the plain terminal state root'
+      });
+    }
+    ensurePrivateWindowsDirectory(directory, {
+      protectedRoot: ownsDirectory,
+      description: ownsDirectory
+        ? 'the plain terminal control directory'
+        : 'the managed terminal target control directory'
+    });
+  } else {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    mkdirSync(directory, { recursive: !ownsDirectory, mode: 0o700 });
+  }
   const markerName = (state: string) => ownsDirectory ? state : `${id}.${state}.json`;
+  const windowsDirectoryIdentity = process.platform === 'win32'
+    ? privateWindowsDirectoryIdentity(directory)
+    : undefined;
   const paths: TerminalControlPaths = {
     id,
     sessionId,
@@ -156,9 +194,16 @@ export function createTerminalControlPaths(options: TerminalControllerOptions = 
     failedPath: options.failedPath ?? join(directory, markerName('failed')),
     forcedPath: options.forcedPath ?? join(directory, markerName('forced')),
     gracefulShutdownMs: Math.max(0, options.gracefulShutdownMs ?? 2000),
-    ownsDirectory
+    ownsDirectory,
+    windowsDirectoryIdentity
   };
   writeTerminalMarker(paths.targetTokenPath, `${process.pid}\n`);
+  if (windowsDirectoryIdentity !== undefined) {
+    revalidatePrivateWindowsDirectory(directory, windowsDirectoryIdentity, {
+      protectedRoot: ownsDirectory,
+      description: 'the terminal control directory after ownership-token creation'
+    });
+  }
   return paths;
 }
 
@@ -200,6 +245,10 @@ export class MarkerTerminalProcessController implements TerminalProcessControlle
 
   wasForced(): boolean {
     return existsSync(this.forcedPath);
+  }
+
+  terminalUiOutcome(autoClose: boolean): TerminalUiCloseOutcome {
+    return autoClose ? 'unsupported' : 'preserved';
   }
 
   close(timeoutMs = DEFAULT_STOP_TIMEOUT_MS): boolean {

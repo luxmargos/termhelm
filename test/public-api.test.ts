@@ -136,7 +136,9 @@ describe('managed public API boundary', () => {
 
     await expect(session.ready).rejects.toThrow('Mock controller launch blocked');
     const closed = await session.closed;
-    expect(closed).toEqual({ reason: 'launch-failed', forcedTargetIds: [], warnings: [] });
+    expect(closed).toMatchObject({ reason: 'launch-failed', forcedTargetIds: [], warnings: [] });
+    expect(closed.uiCloseResults).toHaveLength(1);
+    expect(closed.uiCloseResults[0]?.outcome).toBe('unsupported');
     await expect(session.close()).resolves.toBe(closed);
     expect(managerActivity.ensureSessionDirectory).toHaveBeenCalledTimes(1);
     expect(managerActivity.writeSessionRecord).toHaveBeenCalledTimes(1);
@@ -171,7 +173,7 @@ describe('managed public API boundary', () => {
 });
 
 describe('plain and packaged public API boundary', () => {
-  it('does not pass raw JavaScript controller metadata into a plain launch', () => {
+  it('does not pass raw JavaScript controller metadata into a plain launch', async () => {
     const controller = {
       id: randomUUID(),
       readyPath: '/mock/ready',
@@ -201,11 +203,120 @@ describe('plain and packaged public API boundary', () => {
       shutdownStateDirectory: '/untrusted/state'
     } as never);
 
-    const passedOptions = launch.mock.calls.at(-1)?.[1];
+    const call = launch.mock.calls.at(-1);
+    const passedOptions = call?.[process.platform === 'linux' ? 2 : 1];
     expect(passedOptions).toEqual({ autoClose: true, exitAfterCommand: false });
+    if (process.platform === 'linux') {
+      expect(call?.[1]).toBe(platformActivity.resolveLinuxLauncher.mock.results.at(-1)?.value);
+    } else if (process.platform === 'win32') {
+      expect(call?.[2]).toEqual({});
+      expect(call?.[3]).toBe(platformActivity.resolveWindowsControllerBackend.mock.results.at(-1)?.value);
+    }
+    expect(session.closed).toBeInstanceOf(Promise);
     session.close();
+    await expect(session.closed).resolves.toEqual({
+      uiCloseResults: [{ targetId: controller.id, outcome: 'unsupported' }],
+      warnings: []
+    });
     expect(controller.close).toHaveBeenCalledTimes(1);
     expect(controller.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports natural plain completion and UI outcome without requiring close()', async () => {
+    let stopped = false;
+    const controller = {
+      id: randomUUID(),
+      readyPath: '/mock/ready',
+      stoppingPath: '/mock/stopping',
+      stoppedPath: '/mock/stopped',
+      failedPath: '/mock/failed',
+      forcedPath: '/mock/forced',
+      requestClose: vi.fn(),
+      waitUntilReady: vi.fn(() => true),
+      waitUntilStopped: vi.fn(() => stopped),
+      wasForced: vi.fn(() => false),
+      terminalUiOutcome: vi.fn(() => 'preserved' as const),
+      close: vi.fn(() => true),
+      dispose: vi.fn()
+    };
+    const launch = process.platform === 'darwin'
+      ? platformActivity.launchMacTerminalController
+      : process.platform === 'win32'
+        ? platformActivity.launchWindowsTerminalController
+        : platformActivity.launchLinuxTerminalController;
+    launch.mockReturnValueOnce(controller);
+    const session = launchTerminalWindows([target], { autoClose: false });
+    stopped = true;
+
+    await expect(session.closed).resolves.toEqual({
+      uiCloseResults: [{ targetId: controller.id, outcome: 'preserved' }],
+      warnings: []
+    });
+    expect(controller.close).not.toHaveBeenCalled();
+    expect(controller.terminalUiOutcome).toHaveBeenCalledWith(false);
+    expect(controller.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('starts unreferenced plain completion cleanup even when closed is never accessed', async () => {
+    let stopped = false;
+    const controller = {
+      id: randomUUID(),
+      readyPath: '/mock/ready',
+      stoppingPath: '/mock/stopping',
+      stoppedPath: '/mock/stopped',
+      failedPath: '/mock/failed',
+      forcedPath: '/mock/forced',
+      requestClose: vi.fn(),
+      waitUntilReady: vi.fn(() => true),
+      waitUntilStopped: vi.fn(() => stopped),
+      wasForced: vi.fn(() => false),
+      terminalUiOutcome: vi.fn(() => 'preserved' as const),
+      close: vi.fn(() => true),
+      dispose: vi.fn()
+    };
+    const launch = process.platform === 'darwin'
+      ? platformActivity.launchMacTerminalController
+      : process.platform === 'win32'
+        ? platformActivity.launchWindowsTerminalController
+        : platformActivity.launchLinuxTerminalController;
+    launch.mockReturnValueOnce(controller);
+    launchTerminalWindows([target], { autoClose: false });
+    stopped = true;
+
+    await vi.waitFor(() => expect(controller.dispose).toHaveBeenCalledOnce());
+    expect(controller.terminalUiOutcome).toHaveBeenCalledWith(false);
+  });
+
+  it('settles plain completion with warnings when UI reporting and disposal fail', async () => {
+    const controller = {
+      id: randomUUID(),
+      readyPath: '/mock/ready',
+      stoppingPath: '/mock/stopping',
+      stoppedPath: '/mock/stopped',
+      failedPath: '/mock/failed',
+      forcedPath: '/mock/forced',
+      requestClose: vi.fn(),
+      waitUntilReady: vi.fn(() => true),
+      waitUntilStopped: vi.fn(() => true),
+      wasForced: vi.fn(() => false),
+      terminalUiOutcome: vi.fn(() => { throw new Error('UI unavailable'); }),
+      close: vi.fn(() => true),
+      dispose: vi.fn(() => { throw new Error('cleanup unavailable'); })
+    };
+    const launch = process.platform === 'darwin'
+      ? platformActivity.launchMacTerminalController
+      : process.platform === 'win32'
+        ? platformActivity.launchWindowsTerminalController
+        : platformActivity.launchLinuxTerminalController;
+    launch.mockReturnValueOnce(controller);
+    const session = launchTerminalWindows([target], { autoClose: true });
+
+    const result = await session.closed;
+    expect(result.uiCloseResults).toEqual([{ targetId: controller.id, outcome: 'unsupported' }]);
+    expect(result.warnings).toEqual([
+      expect.stringContaining('UI unavailable'),
+      expect.stringContaining('cleanup unavailable')
+    ]);
   });
 
   it('allows a plain session to retry a close that was not yet acknowledged', () => {

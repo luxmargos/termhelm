@@ -972,11 +972,6 @@ namespace TerminalWindows
                 failedFile = Required(failedFile, "failed-file");
                 forcedFile = Required(forcedFile, "forced-file");
 
-                if (commandFile.IndexOf('%') >= 0)
-                {
-                    throw new InvalidOperationException(
-                        "Command-file paths containing percent signs are unsupported.");
-                }
                 if (!File.Exists(commandFile))
                 {
                     throw new FileNotFoundException(
@@ -1033,7 +1028,7 @@ namespace TerminalWindows
                 PROCESS_INFORMATION child;
                 StringBuilder commandLine = new StringBuilder(
                     QuoteCreateProcessArgument(comspec) +
-                    " /d /v:off /c call " +
+                    " /d /q /v:off /c " +
                     "\"%TERMHELM_COMMAND_FILE%\"");
                 uint flags =
                     CREATE_SUSPENDED |
@@ -1217,6 +1212,8 @@ $payload = $null
 $payloadDirectory = $null
 $expectedSessionId = $null
 $expectedTargetId = $null
+$commandFile = $null
+$exitMessageFile = $null
 $runEntered = $false
 try {
   if ($SelfTest) {
@@ -1256,6 +1253,35 @@ try {
       )) {
       throw 'Controller payload identity does not match its filename.'
     }
+    $expectedCommandFile = [IO.Path]::GetFullPath(
+      [IO.Path]::Combine($payloadDirectory, "$expectedTargetId.cmd")
+    )
+    $actualCommandFile = [IO.Path]::GetFullPath([string] $payload.commandFile)
+    if (-not [String]::Equals(
+        $actualCommandFile,
+        $expectedCommandFile,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
+      throw 'Controller command-file identity is invalid.'
+    }
+    $commandFile = $actualCommandFile
+    $payloadExitMessageFile = [string] $payload.exitMessageFile
+    if (-not [String]::IsNullOrWhiteSpace($payloadExitMessageFile)) {
+      $expectedExitMessageFile = [IO.Path]::GetFullPath(
+        [IO.Path]::Combine($payloadDirectory, "$expectedTargetId.exit-message.txt")
+      )
+      $actualExitMessageFile = [IO.Path]::GetFullPath($payloadExitMessageFile)
+      if (-not [String]::Equals(
+          $actualExitMessageFile,
+          $expectedExitMessageFile,
+          [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'Controller exit-message-file identity is invalid.'
+      }
+      $exitMessageFile = $actualExitMessageFile
+    } else {
+      $exitMessageFile = ''
+    }
   } finally {
     # The payload contains target environment values and the authenticated
     # control token. It must not remain on disk once parsing has finished.
@@ -1279,7 +1305,6 @@ try {
     [string] $payload.exitMessageFile
   )
 
-  $commandFile = [string] $payload.commandFile
   $comspec = [string] $payload.comspec
   $workingDirectory = [string] $payload.cwd
   $title = [string] $payload.title
@@ -1327,4 +1352,13 @@ try {
   }
   [Console]::Error.WriteLine($launchError.Exception.GetBaseException().Message)
   exit 1
+} finally {
+  # Command and exit-message files are needed only while the Job is active.
+  # Remove them after confirmed completion even if the launching Node process
+  # exited without observing its plain-session completion promise.
+  foreach ($privatePath in @($commandFile, $exitMessageFile)) {
+    if (-not [String]::IsNullOrWhiteSpace($privatePath)) {
+      try { [IO.File]::Delete($privatePath) } catch { }
+    }
+  }
 }

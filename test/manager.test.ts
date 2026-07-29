@@ -148,18 +148,58 @@ foreach ($path in $paths) {
   it.skipIf(process.platform !== 'win32')('fails closed for a pre-existing Windows runtime with inherited permissions', () => {
     mkdirSync(storage.runtimeDirectory!);
     expect(() => ensureManagedTerminalRuntimeDirectory(storage)).toThrow(
-      'Could not establish an owner-only Windows DACL for the managed terminal runtime.'
+      'Could not establish a private DACL for the managed terminal Windows runtime.'
     );
     expect(readdirSync(storage.runtimeDirectory!)).toEqual([]);
   });
 
-  it.skipIf(process.platform !== 'win32')('revalidates a cached Windows runtime after path replacement', () => {
+  it.skipIf(process.platform !== 'win32')('revalidates a Windows runtime after in-place DACL broadening', () => {
+    const root = ensureManagedTerminalRuntimeDirectory(storage);
+    const powershell = join(
+      process.env.SystemRoot!,
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'
+    );
+    const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$path = [Environment]::GetEnvironmentVariable('TERMHELM_TEST_ACL_PATH')
+$acl = Get-Acl -LiteralPath $path
+$acl.SetAccessRuleProtection($false, $true)
+Set-Acl -LiteralPath $path -AclObject $acl
+`;
+    const result = spawnSync(powershell, [
+      '-NoLogo', '-NoProfile', '-NonInteractive',
+      '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')
+    ], {
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, TERMHELM_TEST_ACL_PATH: root }
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(() => ensureManagedTerminalRuntimeDirectory(storage)).toThrow(
+      'Could not establish a private DACL for the managed terminal Windows runtime.'
+    );
+  });
+
+  it.skipIf(process.platform !== 'win32')('revalidates a Windows runtime after path replacement', () => {
     const root = ensureManagedTerminalRuntimeDirectory(storage);
     rmSync(root, { recursive: true });
     mkdirSync(root);
 
     expect(() => ensureManagedTerminalRuntimeDirectory(storage)).toThrow(
-      'Could not establish an owner-only Windows DACL for the managed terminal runtime.'
+      'Could not establish a private DACL for the managed terminal Windows runtime.'
+    );
+  });
+
+  it.skipIf(process.platform !== 'win32')('rejects a junction replacing the protected Windows runtime', () => {
+    const root = ensureManagedTerminalRuntimeDirectory(storage);
+    const junctionTarget = join(sandbox, 'junction-target');
+    rmSync(root, { recursive: true });
+    mkdirSync(junctionTarget);
+    symlinkSync(junctionTarget, root, 'junction');
+
+    expect(() => ensureManagedTerminalRuntimeDirectory(storage)).toThrow(
+      'Could not establish a private DACL for the managed terminal Windows runtime.'
     );
   });
 

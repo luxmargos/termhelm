@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   closeSync,
@@ -19,6 +18,7 @@ import {
 } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
+import { ensurePrivateWindowsDirectory } from './platforms/windows-security.js';
 
 const REGISTRY_VERSION = 2 as const;
 const MAX_REGISTRY_FILE_SIZE = 64 * 1024;
@@ -29,69 +29,6 @@ const AUTHENTICATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
 const GENERATION_PATTERN = /^[0-9]{20,48}$/;
 const GENERATION_TICKET_WIDTH = 20;
 const LABEL_ERROR = 'Managed terminal options.label must be a non-empty label without surrounding whitespace.';
-const WINDOWS_RUNTIME_ACL_ENV = 'TERMHELM_RUNTIME_ACL_PATH';
-const securedWindowsRuntimeRoots = new Map<string, string>();
-
-const WINDOWS_RUNTIME_ACL_SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-$encodedPath = [Environment]::GetEnvironmentVariable('${WINDOWS_RUNTIME_ACL_ENV}')
-if ([String]::IsNullOrWhiteSpace($encodedPath)) { throw 'Missing runtime ACL path.' }
-$path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedPath))
-$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$system = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
-$inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-$propagation = [Security.AccessControl.PropagationFlags]::None
-$allow = [Security.AccessControl.AccessControlType]::Allow
-function Assert-SecureRuntimeAcl([string]$candidate) {
-  if (-not [IO.Directory]::Exists($candidate)) { throw "Runtime directory does not exist: $candidate" }
-  $attributes = [IO.File]::GetAttributes($candidate)
-  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw "Runtime directory is a reparse point: $candidate"
-  }
-  $actual = [IO.Directory]::GetAccessControl($candidate, [Security.AccessControl.AccessControlSections]'Access,Owner')
-  if (-not $actual.AreAccessRulesProtected) { throw "Runtime ACL inheritance is enabled: $candidate" }
-  if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) {
-    throw "Runtime ACL owner mismatch: $candidate"
-  }
-  $userFullControl = $false
-  $systemFullControl = $false
-  foreach ($rule in $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    $sid = $rule.IdentityReference.Value
-    if ($rule.AccessControlType -ne $allow) { throw "Unexpected runtime deny rule: $sid" }
-    if ($sid -ne $user.Value -and $sid -ne $system.Value) {
-      throw "Unexpected runtime ACL principal: $sid"
-    }
-    $hasFullControl = (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl)
-    $hasContainerInheritance = (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -ne 0)
-    $hasObjectInheritance = (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) -ne 0)
-    if ($hasFullControl -and $hasContainerInheritance -and $hasObjectInheritance -and $rule.PropagationFlags -eq $propagation) {
-      if ($sid -eq $user.Value) { $userFullControl = $true }
-      if ($sid -eq $system.Value) { $systemFullControl = $true }
-    }
-  }
-  if (-not $userFullControl -or -not $systemFullControl) {
-    throw "Runtime ACL does not grant inheritable FullControl to the owner and SYSTEM: $candidate"
-  }
-}
-
-if ([IO.Directory]::Exists($path)) {
-  # Never repair a pre-existing directory: another principal may have created
-  # content or retained an open handle before the DACL was made private.
-  Assert-SecureRuntimeAcl $path
-} else {
-  $acl = New-Object Security.AccessControl.DirectorySecurity
-  $acl.SetAccessRuleProtection($true, $false)
-  $acl.SetOwner($user)
-  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($user, 'FullControl', $inheritance, $propagation, $allow)))
-  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($system, 'FullControl', $inheritance, $propagation, $allow)))
-  [void][IO.Directory]::CreateDirectory($path, $acl)
-
-  # If another process won the creation race with a weaker ACL, do not mutate
-  # or trust it. The postcondition below rejects that directory.
-  Assert-SecureRuntimeAcl $path
-}
-`;
-
 export type ManagedLabelScope =
   | { type: 'user' }
   | { type: 'project'; root: string };
@@ -216,6 +153,13 @@ function scopesEqual(left: ManagedLabelScope, right: ManagedLabelScope): boolean
 }
 
 function defaultUserRuntimeDirectory(): string {
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) {
+      throw new Error('Cannot create private managed terminal state because LOCALAPPDATA is unavailable.');
+    }
+    return join(localAppData, 'TermHelm', `managed-v${REGISTRY_VERSION}`);
+  }
   if (typeof process.getuid === 'function') {
     // Keep the user-owned directory directly below the root-owned sticky
     // temporary directory. No untrusted user can rename this entry.
@@ -266,63 +210,28 @@ function verifyPrivateDirectory(path: string): void {
 }
 
 function ensureSecureDirectory(path: string): void {
+  if (process.platform === 'win32') {
+    ensurePrivateWindowsDirectory(path, {
+      protectedRoot: false,
+      description: 'the managed terminal runtime child directory'
+    });
+    verifyOwnedPath(path, 'directory');
+    return;
+  }
   mkdirSync(path, { recursive: true, mode: 0o700 });
   verifyOwnedPath(path, 'directory');
   chmodSync(path, 0o700);
 }
 
-function windowsRuntimeRootIdentity(root: string): string {
-  const stats = lstatSync(root, { bigint: true });
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(`Unsafe managed terminal directory: ${root}`);
-  }
-  return `${String(stats.dev)}:${String(stats.ino)}:${String(stats.birthtimeNs)}`;
-}
-
-function secureWindowsRuntimeRoot(root: string): void {
-  if (process.platform !== 'win32') return;
-  const cachedIdentity = securedWindowsRuntimeRoots.get(root);
-  if (cachedIdentity !== undefined) {
-    try {
-      if (windowsRuntimeRootIdentity(root) === cachedIdentity) return;
-    } catch {
-      // Recreate or revalidate below. A deleted/replaced cached path is never
-      // accepted based on its pathname alone.
-    }
-    securedWindowsRuntimeRoots.delete(root);
-  }
-  const systemRoot = process.env.SystemRoot;
-  if (!systemRoot) {
-    throw new Error('Cannot secure the managed terminal Windows runtime because SystemRoot is unavailable.');
-  }
-  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const encodedCommand = Buffer.from(WINDOWS_RUNTIME_ACL_SCRIPT, 'utf16le').toString('base64');
-  const encodedPath = Buffer.from(root, 'utf8').toString('base64');
-  const result = spawnSync(powershell, [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-EncodedCommand', encodedCommand
-  ], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 15_000,
-    maxBuffer: 64 * 1024,
-    env: { ...process.env, [WINDOWS_RUNTIME_ACL_ENV]: encodedPath }
-  });
-  if (result.error || result.status !== 0) {
-    const detail = result.error?.message ?? result.stderr.trim() ?? `exit status ${String(result.status)}`;
-    throw new Error(`Could not establish an owner-only Windows DACL for the managed terminal runtime. ${detail}`);
-  }
-  securedWindowsRuntimeRoots.set(root, windowsRuntimeRootIdentity(root));
-}
-
 export function ensureManagedTerminalRuntimeDirectory(options: ManagedManagerStorageOptions = {}): string {
   const root = managedTerminalRuntimeDirectory(options);
   if (process.platform === 'win32') {
-    // The PowerShell helper creates a new root with its protected DACL in the
-    // same operation. Existing roots are accepted only if already private.
-    secureWindowsRuntimeRoot(root);
+    // The helper creates a new root with its protected DACL in the same
+    // operation and revalidates the effective ACL on every call.
+    ensurePrivateWindowsDirectory(root, {
+      protectedRoot: true,
+      description: 'the managed terminal Windows runtime'
+    });
     verifyOwnedPath(root, 'directory');
   } else {
     ensureSecureDirectory(root);

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appleScriptString } from '../shell.js';
+import type { TerminalUiCloseOutcome } from '../types.js';
 
 const POLL_INTERVAL_MS = 100;
 
@@ -112,22 +113,30 @@ export function buildCloseMacTerminalTabScript(windowId: number, tty: string): s
     `set targetTty to ${appleScriptString(tty)}`,
     'try',
     '  set targetWindow to first window whose id is targetWindowId',
-    '  if (count of tabs of targetWindow) is not 1 then return',
-    '  repeat with targetTab in tabs of targetWindow',
-    '    if (tty of targetTab as text) is targetTty then',
-    '      if busy of targetTab then return',
-    '      close targetWindow',
-    '      return',
-    '    end if',
-    '  end repeat',
+    'on error',
+    '  return "missing"',
     'end try',
+    'if (count of tabs of targetWindow) is not 1 then return "shared"',
+    'repeat with targetTab in tabs of targetWindow',
+    '  if (tty of targetTab as text) is targetTty then',
+    '    if busy of targetTab then return "busy"',
+    '    close targetWindow',
+    '    return "closed"',
+    '  end if',
+    'end repeat',
+    'return "missing"',
     'end tell'
   ];
 }
 
-export function closeMacTerminalTab(windowId: number, tty: string): void {
+export function closeMacTerminalTab(windowId: number, tty: string): TerminalUiCloseOutcome {
   const script = buildCloseMacTerminalTabScript(windowId, tty);
-  spawnSync('osascript', script.flatMap(line => ['-e', line]), { stdio: 'ignore' });
+  const result = spawnSync('osascript', script.flatMap(line => ['-e', line]), { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return 'unsupported';
+  const outcome = result.stdout.trim();
+  if (outcome === 'closed' || outcome === 'missing') return 'closed';
+  if (outcome === 'shared') return 'refused-shared';
+  return outcome === 'busy' ? 'host-managed' : 'unsupported';
 }
 
 export function markerIsAuthoritative(
