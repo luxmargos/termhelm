@@ -24,13 +24,14 @@ import {
 } from '../control.js';
 import type { InternalTerminalLaunchOptions, ResolvedTerminalTarget } from '../types.js';
 import type { TerminalControlPaths } from './controller.js';
+import { sanitizeInheritedTemporaryDirectories } from './environment.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
 const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const POLL_INTERVAL_MS = 50;
 const SOLO_SNAPSHOT_COUNT = 2;
-const MAX_PAYLOAD_BYTES = 64 * 1024;
+const MAX_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_PS_OUTPUT_BYTES = 8 * 1024 * 1024;
 const PS_TIMEOUT_MS = 2_000;
 
@@ -51,13 +52,18 @@ export interface PosixSidecarPayload {
   authenticationToken?: string;
   cwd: string;
   command: string;
+  inheritedEnv?: Record<string, string>;
   env?: Record<string, string>;
   exitMessage?: string;
   exitAfterCommand: boolean;
 }
 
 function encodedPayload(payload: PosixSidecarPayload): string {
-  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const bytes = Buffer.from(JSON.stringify(payload), 'utf8');
+  if (bytes.length === 0 || bytes.length > MAX_PAYLOAD_BYTES) {
+    throw new Error('POSIX controller payload exceeds the safe size limit.');
+  }
+  return bytes.toString('base64url');
 }
 
 function writePrivatePayloadFile(path: string, payload: PosixSidecarPayload): void {
@@ -105,7 +111,8 @@ function bundledPosixSidecarScriptPath(): string {
 export function createPosixSidecarLaunch(
   target: ResolvedTerminalTarget,
   control: TerminalControlPaths,
-  options: InternalTerminalLaunchOptions
+  options: InternalTerminalLaunchOptions,
+  inheritedEnvironment?: Readonly<Record<string, string>>
 ): NonNullable<InternalTerminalLaunchOptions['posixSidecar']> {
   const payload: PosixSidecarPayload = {
     version: 2,
@@ -123,6 +130,8 @@ export function createPosixSidecarLaunch(
     command: target.command,
     exitAfterCommand: options.exitAfterCommand ?? true
   };
+  const inheritedEnv = validateInheritedEnvironment(inheritedEnvironment);
+  if (inheritedEnv !== undefined) payload.inheritedEnv = inheritedEnv;
   if (target.env !== undefined) payload.env = target.env;
   if (target.exitMessage !== undefined) payload.exitMessage = target.exitMessage;
   if (options.shutdownTokenPath) payload.supervisorTokenPath = options.shutdownTokenPath;
@@ -136,6 +145,7 @@ export function createPosixSidecarLaunch(
     command: '',
     exitAfterCommand: true
   };
+  delete finalizerPayload.inheritedEnv;
   delete finalizerPayload.env;
   delete finalizerPayload.exitMessage;
   delete finalizerPayload.supervisorTokenPath;
@@ -205,6 +215,21 @@ function validateEnvironment(value: unknown): Record<string, string> | undefined
   return environment;
 }
 
+function validateInheritedEnvironment(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) throw new Error('POSIX controller inherited environment must be an object.');
+  const environment = Object.create(null) as Record<string, string>;
+  for (const [name, entry] of Object.entries(value)) {
+    if (name.length === 0 || /[=\0]/.test(name) || typeof entry !== 'string' || entry.includes('\0')) {
+      throw new Error(
+        'POSIX controller inherited environment entries must be OS-compatible string values without NUL characters.'
+      );
+    }
+    environment[name] = entry;
+  }
+  return environment;
+}
+
 export function parsePosixSidecarPayload(encoded: string): PosixSidecarPayload {
   if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > MAX_PAYLOAD_BYTES * 2) {
     throw new Error('POSIX controller payload is invalid.');
@@ -253,6 +278,8 @@ export function parsePosixSidecarPayload(encoded: string): PosixSidecarPayload {
     command: validateString(value.command, 'command'),
     exitAfterCommand: value.exitAfterCommand
   };
+  const inheritedEnvironment = validateInheritedEnvironment(value.inheritedEnv);
+  if (inheritedEnvironment !== undefined) payload.inheritedEnv = inheritedEnvironment;
   const environment = validateEnvironment(value.env);
   if (environment !== undefined) payload.env = environment;
   if (value.exitMessage !== undefined) payload.exitMessage = validateString(value.exitMessage, 'exit message');
@@ -423,6 +450,19 @@ interface OwnedChild {
   currentResult: OwnedChildResult | null;
 }
 
+function targetEnvironment(payload: PosixSidecarPayload, fallback: boolean): NodeJS.ProcessEnv {
+  const inherited = sanitizeInheritedTemporaryDirectories(
+    { ...process.env, ...payload.inheritedEnv },
+    payload.env,
+    payload.cwd
+  );
+  return {
+    ...inherited,
+    ...payload.env,
+    ...(fallback ? { TERMHELM_INTERNAL_FALLBACK_SHELL: '1' } : {})
+  };
+}
+
 function spawnOwnedShell(payload: PosixSidecarPayload, fallback: boolean): OwnedChild {
   const shell = process.env.SHELL || '/bin/sh';
   const commandScriptPath = fallback
@@ -438,11 +478,7 @@ function spawnOwnedShell(payload: PosixSidecarPayload, fallback: boolean): Owned
   }
   const child = spawn(shell, fallback ? ['-l'] : ['-l', commandScriptPath!], {
     cwd: payload.cwd,
-    env: {
-      ...process.env,
-      ...payload.env,
-      ...(fallback ? { TERMHELM_INTERNAL_FALLBACK_SHELL: '1' } : {})
-    },
+    env: targetEnvironment(payload, fallback),
     // An interactive shell attached directly to the terminal enables job
     // control and moves itself into a new process group. Keep fallback input
     // behind the runner so the shell remains in the pinned owned group.

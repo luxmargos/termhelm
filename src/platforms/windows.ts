@@ -21,6 +21,10 @@ import {
   type TerminalControllerOptions,
   type TerminalProcessController
 } from './controller.js';
+import {
+  sanitizeInheritedTemporaryDirectories,
+  usableTemporaryDirectory
+} from './environment.js';
 import { revalidatePrivateWindowsDirectory } from './windows-security.js';
 
 const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'termhelm-controller.ps1';
@@ -166,7 +170,7 @@ export function resolveWindowsControllerBackend(
   const scriptPath = resolveWindowsPowerShellControllerPath(options);
   if (!scriptPath) return null;
 
-  const environment = options.environment ?? process.env;
+  const environment = windowsControllerEnvironment(options.environment);
   const configuredProbeTimeoutMs = options.probeTimeoutMs;
   const timeoutMs = configuredProbeTimeoutMs !== undefined && Number.isFinite(configuredProbeTimeoutMs)
     ? Math.max(1, Math.trunc(configuredProbeTimeoutMs))
@@ -197,6 +201,25 @@ function validateWindowsEnvironment(env: Record<string, string> | undefined): vo
     }
     names.set(folded, key);
   }
+}
+
+function windowsControllerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const environment = sanitizeInheritedTemporaryDirectories(
+    source,
+    undefined,
+    process.cwd(),
+    true
+  );
+  const hasUsableTemporaryDirectory = Object.keys(environment)
+    .some(name => ['TMP', 'TEMP'].includes(name.toUpperCase()));
+  if (!hasUsableTemporaryDirectory && source.LOCALAPPDATA) {
+    const fallback = usableTemporaryDirectory(join(source.LOCALAPPDATA, 'Temp'), process.cwd());
+    if (fallback !== null) {
+      environment.TEMP = fallback;
+      environment.TMP = fallback;
+    }
+  }
+  return environment;
 }
 
 function revalidateWindowsControlDirectory(
@@ -348,7 +371,7 @@ export function launchWindowsTerminalController(
         // Parse/delete the payload and compile in the package environment.
         // Target variables are applied only after Add-Type succeeds and just
         // before the owned child is created.
-        env: { ...process.env }
+        env: windowsControllerEnvironment()
       }
     );
     let controller: WindowsTerminalControllerImpl | null = null;

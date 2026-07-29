@@ -160,6 +160,41 @@ foreach ($path in $paths) {
     expect(verified.status, verified.stderr).toBe(0);
   });
 
+  it('removes stale inherited Windows temp paths without overriding explicit target values', () => {
+    childProcessActivity.spawn.mockReturnValue({ pid: 4321, once: vi.fn(), unref: vi.fn() });
+    const directory = temporaryDirectory();
+    const missingTemporaryDirectory = join(directory, 'missing-temp');
+    const previousTemp = process.env.TEMP;
+    const previousTmp = process.env.TMP;
+    process.env.TEMP = missingTemporaryDirectory;
+    process.env.TMP = missingTemporaryDirectory;
+    try {
+      launchWindowsTerminalController({
+        title: 'stale inherited Windows temp',
+        cwd: directory,
+        command: 'ver >nul',
+        env: { TEMP: '-explicit-target-temp' }
+      }, {}, { stateDirectory: join(directory, 'state') }, {
+        executable: 'powershell.exe',
+        scriptPath: join(directory, 'termhelm-controller.ps1')
+      });
+
+      const args = childProcessActivity.spawn.mock.calls[0]?.[1] as string[];
+      const payloadPath = args[args.indexOf('-PayloadPath') + 1]!;
+      expect(JSON.parse(readFileSync(payloadPath, 'utf8'))).toMatchObject({
+        environment: [{ key: 'TEMP', value: '-explicit-target-temp' }]
+      });
+      const controllerEnvironment = childProcessActivity.spawn.mock.calls[0]?.[2]?.env;
+      expect(controllerEnvironment?.TEMP).not.toBe(missingTemporaryDirectory);
+      expect(controllerEnvironment?.TMP).not.toBe(missingTemporaryDirectory);
+    } finally {
+      if (previousTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = previousTemp;
+      if (previousTmp === undefined) delete process.env.TMP;
+      else process.env.TMP = previousTmp;
+    }
+  });
+
   it('launches only the PowerShell backend selected during preflight', () => {
     childProcessActivity.spawn.mockReturnValue({
       pid: 4322,

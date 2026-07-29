@@ -273,6 +273,51 @@ describe.skipIf(process.platform !== 'win32')('PowerShell Windows Job Object con
     );
 
     it.skipIf(!available)(
+      `recovers from stale inherited temp paths with ${backend.name}`,
+      () => {
+        const directory = temporaryDirectory();
+        const commandScriptPath = join(directory, 'temp-check.cjs');
+        const outputPath = join(directory, 'effective-temp.txt');
+        writeFileSync(commandScriptPath, [
+          "const { writeFileSync } = require('node:fs');",
+          "const { tmpdir } = require('node:os');",
+          `writeFileSync(${JSON.stringify(outputPath)}, tmpdir(), 'utf8');`
+        ].join('\r\n'), 'utf8');
+        const missingTemporaryDirectory = join(directory, 'removed-temp');
+        const previousTemp = process.env.TEMP;
+        const previousTmp = process.env.TMP;
+        process.env.TEMP = missingTemporaryDirectory;
+        process.env.TMP = missingTemporaryDirectory;
+        let controller: ReturnType<typeof launchWindowsTerminalController>;
+        try {
+          controller = launchWindowsTerminalController({
+            title: 'stale Windows temp',
+            cwd: directory,
+            command: `${windowsQuote(process.execPath)} ${windowsQuote(commandScriptPath)}`
+          }, { exitAfterCommand: true }, {
+            stateDirectory: join(directory, 'state')
+          }, {
+            executable: backend.executable,
+            scriptPath
+          });
+        } finally {
+          if (previousTemp === undefined) delete process.env.TEMP;
+          else process.env.TEMP = previousTemp;
+          if (previousTmp === undefined) delete process.env.TMP;
+          else process.env.TMP = previousTmp;
+        }
+
+        expect(controller.waitUntilReady(12_000)).toBe(true);
+        expect(controller.waitUntilStopped(12_000)).toBe(true);
+        const effectiveTemporaryDirectory = readFileSync(outputPath, 'utf8');
+        expect(effectiveTemporaryDirectory).not.toBe(missingTemporaryDirectory);
+        expect(existsSync(effectiveTemporaryDirectory)).toBe(true);
+        controller.dispose();
+      },
+      30_000
+    );
+
+    it.skipIf(!available)(
       `supports percent-sign state paths and UTF-8 command/environment transport with ${backend.name}`,
       () => {
         const root = temporaryDirectory();

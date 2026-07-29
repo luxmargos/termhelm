@@ -2,8 +2,10 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync
@@ -131,7 +133,8 @@ function launchWrapper(
   extraOptions: InternalTerminalLaunchOptions = {},
   shellPath = process.env.SHELL,
   providedControl?: TerminalControlPaths,
-  enableErrexit = false
+  enableErrexit = false,
+  inheritedEnvironment: NodeJS.ProcessEnv = {}
 ): {
   child: ChildProcess;
   control: TerminalControlPaths;
@@ -158,7 +161,11 @@ function launchWrapper(
   const command = enableErrexit ? `set -e\n${managedCommand}` : managedCommand;
   const child = spawn('/bin/bash', ['-c', command], {
     detached: true,
-    env: { ...process.env, ...(shellPath === undefined ? {} : { SHELL: shellPath }) },
+    env: {
+      ...process.env,
+      ...inheritedEnvironment,
+      ...(shellPath === undefined ? {} : { SHELL: shellPath })
+    },
     stdio: ['pipe', 'ignore', 'pipe']
   });
   childProcesses.push(child);
@@ -226,8 +233,39 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     });
     const finalizer = parsePosixSidecarPayload(readFileSync(launch.finalizerPayloadPath, 'utf8').trim());
     expect(finalizer.command).toBe('');
+    expect(finalizer.inheritedEnv).toBeUndefined();
     expect(finalizer.env).toBeUndefined();
     expect(finalizer.authenticationToken).toBeUndefined();
+  });
+
+  it('accepts OS-compatible inherited names separately and rejects oversized payloads before launch', () => {
+    const control = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
+    const target: TerminalTarget = {
+      title: 'inherited environment',
+      cwd: temporaryDirectory(),
+      command: 'exit 0',
+      env: { PATH: '/explicit/path' }
+    };
+    const launch = createPosixSidecarLaunch(target, control, { exitAfterCommand: true }, {
+      'runtime.manager-path': '/private/runtime',
+      PATH: '/inherited/path'
+    });
+    expect(payloadFromLaunch(launch)).toMatchObject({
+      inheritedEnv: {
+        'runtime.manager-path': '/private/runtime',
+        PATH: '/inherited/path'
+      },
+      env: { PATH: '/explicit/path' }
+    });
+
+    const oversizedControl = createTerminalControlPaths({ stateDirectory: temporaryDirectory() });
+    expect(() => createPosixSidecarLaunch(
+      target,
+      oversizedControl,
+      { exitAfterCommand: true },
+      { TERMHELM_OVERSIZED: 'x'.repeat(2 * 1024 * 1024) }
+    )).toThrow('safe size limit');
+    expect(readdirSync(oversizedControl.directory).some(name => name.endsWith('.payload'))).toBe(false);
   });
 
   it('keeps the target command out of shell process argv', async () => {
@@ -247,6 +285,93 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     await waitFor(() => existsSync(control.stoppedPath));
     await waitForExit(child);
     expect(stderr()).not.toContain('termhelm POSIX controller:');
+  });
+
+  it('drops inherited temporary-directory variables after their directories disappear', async () => {
+    const missingTemporaryDirectory = join(temporaryDirectory(), 'removed-context-temp');
+    const outputPath = join(temporaryDirectory(), 'effective-temp.txt');
+    const command = [
+      "const { writeFileSync } = require('node:fs');",
+      "const { tmpdir } = require('node:os');",
+      `writeFileSync(${JSON.stringify(outputPath)}, tmpdir(), 'utf8');`
+    ].join(' ');
+    const target: TerminalTarget = {
+      title: 'stale inherited temp',
+      cwd: temporaryDirectory(),
+      command: `${posixShellQuote(process.execPath)} -e ${posixShellQuote(command)}`
+    };
+    const { child, control, stderr } = launchWrapper(
+      target,
+      250,
+      {},
+      process.env.SHELL,
+      undefined,
+      false,
+      {
+        TMPDIR: missingTemporaryDirectory,
+        TMP: missingTemporaryDirectory,
+        TEMP: missingTemporaryDirectory
+      }
+    );
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(0);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(readFileSync(outputPath, 'utf8')).not.toBe(missingTemporaryDirectory);
+    expect(existsSync(readFileSync(outputPath, 'utf8'))).toBe(true);
+  });
+
+  it('normalizes relative inherited temp paths and removes empty or non-directory values', async () => {
+    const cwd = temporaryDirectory();
+    const relativeTemporaryDirectory = 'relative-temp';
+    const expectedTemporaryDirectory = join(cwd, relativeTemporaryDirectory);
+    mkdirSync(expectedTemporaryDirectory);
+    const nonDirectory = join(cwd, 'not-a-directory');
+    writeFileSync(nonDirectory, 'file', 'utf8');
+    const outputPath = join(cwd, 'temp-environment.json');
+    const command = [
+      "const { writeFileSync } = require('node:fs');",
+      "const { tmpdir } = require('node:os');",
+      `writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({`,
+      'TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, effective: tmpdir()',
+      "}), 'utf8');"
+    ].join(' ');
+    const { child, control } = launchWrapper(
+      {
+        title: 'relative inherited temp',
+        cwd,
+        command: `${posixShellQuote(process.execPath)} -e ${posixShellQuote(command)}`
+      },
+      250,
+      {},
+      process.env.SHELL,
+      undefined,
+      false,
+      { TMPDIR: '', TMP: nonDirectory, TEMP: relativeTemporaryDirectory }
+    );
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(0);
+    expect(JSON.parse(readFileSync(outputPath, 'utf8'))).toEqual({
+      TEMP: expectedTemporaryDirectory,
+      effective: expectedTemporaryDirectory
+    });
+  });
+
+  it('preserves an explicit target temp value even when it is currently unavailable', async () => {
+    const cwd = temporaryDirectory();
+    const explicitTemporaryDirectory = join(cwd, 'explicit-future-temp');
+    const outputPath = join(cwd, 'explicit-temp.txt');
+    const { child, control } = launchWrapper({
+      title: 'explicit target temp',
+      cwd,
+      command: `printf '%s' "$TMPDIR" > ${posixShellQuote(outputPath)}`,
+      env: { TMPDIR: explicitTemporaryDirectory }
+    });
+
+    await waitFor(() => existsSync(control.stoppedPath));
+    expect(await waitForExit(child)).toBe(0);
+    expect(readFileSync(outputPath, 'utf8')).toBe(explicitTemporaryDirectory);
   });
 
   it('unlinks the sensitive runner payload before readiness and finalizer state after completion', async () => {

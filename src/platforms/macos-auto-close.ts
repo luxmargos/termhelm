@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appleScriptString } from '../shell.js';
 import type { TerminalUiCloseOutcome } from '../types.js';
+import { macAutomationEnvironment } from './macos-environment.js';
 
 const POLL_INTERVAL_MS = 100;
 
@@ -79,7 +80,7 @@ export function macTerminalTabState(windowId: number, tty: string): MacTerminalT
   const result = spawnSync(
     'osascript',
     buildMacTerminalTabStateScript(windowId, tty).flatMap(line => ['-e', line]),
-    { encoding: 'utf8' }
+    { encoding: 'utf8', env: macAutomationEnvironment() }
   );
   if (result.error || result.status !== 0) return 'unknown';
   const state = result.stdout.trim();
@@ -131,7 +132,10 @@ export function buildCloseMacTerminalTabScript(windowId: number, tty: string): s
 
 export function closeMacTerminalTab(windowId: number, tty: string): TerminalUiCloseOutcome {
   const script = buildCloseMacTerminalTabScript(windowId, tty);
-  const result = spawnSync('osascript', script.flatMap(line => ['-e', line]), { encoding: 'utf8' });
+  const result = spawnSync('osascript', script.flatMap(line => ['-e', line]), {
+    encoding: 'utf8',
+    env: macAutomationEnvironment()
+  });
   if (result.error || result.status !== 0) return 'unsupported';
   const outcome = result.stdout.trim();
   if (outcome === 'closed' || outcome === 'missing') return 'closed';

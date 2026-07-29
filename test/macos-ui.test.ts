@@ -1,6 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const childProcess = vi.hoisted(() => ({
@@ -16,15 +25,41 @@ vi.mock('node:child_process', async importOriginal => ({
 
 import { closeMacTerminalTab, launchMacTerminalController } from '../src/platforms/macos.js';
 import {
+  macAutomationEnvironment,
+  resolvePrivateDarwinTemporaryDirectory
+} from '../src/platforms/macos-environment.js';
+import {
   buildMacTerminalTabStateScript,
   markerIsAuthoritative,
   waitForMacTerminalTabToSettle
 } from '../src/platforms/macos-auto-close.js';
+import { parsePosixSidecarPayload } from '../src/platforms/posix-sidecar.js';
 
 describe('mocked macOS Terminal UI cleanup', () => {
   beforeEach(() => {
     childProcess.spawn.mockClear();
     childProcess.spawnSync.mockReset();
+  });
+
+  it('fails closed instead of falling back to a shared Darwin temp directory', () => {
+    const sharedDirectory = mkdtempSync(join(tmpdir(), 'termhelm-shared-temp-'));
+    chmodSync(sharedDirectory, 0o755);
+    try {
+      expect(() => resolvePrivateDarwinTemporaryDirectory(() => sharedDirectory)).toThrow('not private');
+      expect(() => resolvePrivateDarwinTemporaryDirectory(() => { throw new Error('unavailable'); })).toThrow(
+        'Cannot resolve'
+      );
+    } finally {
+      rmSync(sharedDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('uses the private Darwin user temp directory for automation', () => {
+    const environment = macAutomationEnvironment();
+    const stats = statSync(environment.TMPDIR!);
+    expect(stats.isDirectory()).toBe(true);
+    expect(stats.mode & 0o077).toBe(0);
+    if (typeof process.getuid === 'function') expect(stats.uid).toBe(process.getuid());
   });
 
   it('closes only the owned window matching both captured window ID and TTY', () => {
@@ -34,7 +69,12 @@ describe('mocked macOS Terminal UI cleanup', () => {
     expect(childProcess.spawnSync).toHaveBeenCalledTimes(1);
     const [executable, args, options] = childProcess.spawnSync.mock.calls[0]!;
     expect(executable).toBe('osascript');
-    expect(options).toEqual({ encoding: 'utf8' });
+    expect(options).toMatchObject({ encoding: 'utf8' });
+    const automationEnvironment = (options as { env: NodeJS.ProcessEnv }).env;
+    expect(isAbsolute(automationEnvironment.TMPDIR!)).toBe(true);
+    expect(statSync(automationEnvironment.TMPDIR!).isDirectory()).toBe(true);
+    expect(automationEnvironment.TMP).toBeUndefined();
+    expect(automationEnvironment.TEMP).toBeUndefined();
     const script = (args as string[]).filter((_, index) => index % 2 === 1).join('\n');
     expect(script).toContain('targetWindowId to 731');
     expect(script).toContain('targetTty to "/dev/ttys042"');
@@ -214,7 +254,10 @@ describe('mocked macOS Terminal UI cleanup', () => {
       title: 'private launch',
       cwd: process.cwd(),
       command: 'printf managed-command-sentinel',
-      env: { TERMHELM_SECRET_SENTINEL: 'private-value' }
+      env: {
+        TERMHELM_SECRET_SENTINEL: 'private-value',
+        TMPDIR: '/explicit-target-temp'
+      }
     });
     const controlDirectory = dirname(controller.readyPath);
     const launchScriptPath = join(controlDirectory, `${controller.id}.launch.sh`);
@@ -223,7 +266,12 @@ describe('mocked macOS Terminal UI cleanup', () => {
       expect(childProcess.spawnSync).toHaveBeenCalledTimes(1);
       const [executable, args, options] = childProcess.spawnSync.mock.calls[0]!;
       expect(executable).toBe('osascript');
-      expect(options).toEqual({ encoding: 'utf8' });
+      expect(options).toMatchObject({ encoding: 'utf8' });
+      const automationEnvironment = (options as { env: NodeJS.ProcessEnv }).env;
+      expect(isAbsolute(automationEnvironment.TMPDIR!)).toBe(true);
+      expect(statSync(automationEnvironment.TMPDIR!).isDirectory()).toBe(true);
+      expect(automationEnvironment.TMP).toBeUndefined();
+      expect(automationEnvironment.TEMP).toBeUndefined();
       const doScript = (args as string[]).find(argument => argument.startsWith('set targetTab to do script '));
       expect(doScript).toBeDefined();
       expect(doScript).toBe(`set targetTab to do script "/bin/bash '${launchScriptPath}'"`);
@@ -241,6 +289,21 @@ describe('mocked macOS Terminal UI cleanup', () => {
       expect(launchScript).not.toContain('private-value');
       const payloadFiles = readdirSync(controlDirectory).filter(name => name.endsWith('.payload'));
       expect(payloadFiles).toHaveLength(2);
+      const runnerPayload = payloadFiles
+        .map(name => parsePosixSidecarPayload(
+          readFileSync(join(controlDirectory, name), 'utf8').trim()
+        ))
+        .find(payload => payload.command === 'printf managed-command-sentinel');
+      expect(runnerPayload?.inheritedEnv).toMatchObject({
+        PATH: process.env.PATH,
+        TMPDIR: automationEnvironment.TMPDIR
+      });
+      expect(runnerPayload?.inheritedEnv?.TMP).toBeUndefined();
+      expect(runnerPayload?.inheritedEnv?.TEMP).toBeUndefined();
+      expect(runnerPayload?.env).toEqual({
+        TERMHELM_SECRET_SENTINEL: 'private-value',
+        TMPDIR: '/explicit-target-temp'
+      });
       for (const name of payloadFiles) {
         expect(statSync(join(controlDirectory, name)).mode & 0o777).toBe(0o600);
       }

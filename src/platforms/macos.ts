@@ -23,6 +23,7 @@ import {
   macTerminalTabState,
   waitForMacTerminalTabToSettle
 } from './macos-auto-close.js';
+import { macAutomationEnvironment, macInheritedTargetEnvironment } from './macos-environment.js';
 import { cleanupPosixSidecarLaunch, createPosixSidecarLaunch } from './posix-sidecar.js';
 
 export { buildCloseMacTerminalTabScript, closeMacTerminalTab } from './macos-auto-close.js';
@@ -138,7 +139,7 @@ function launchMacTerminalIdentity(
         '-e', 'end repeat',
         '-e', 'error "Unable to identify the launched Terminal tab by TTY."',
         '-e', 'end tell'
-      ], { encoding: 'utf8' });
+      ], { encoding: 'utf8', env: macAutomationEnvironment() });
     } catch (error) {
       if (launch.launchScriptPath) rmSync(launch.launchScriptPath, { force: true });
       throw error;
@@ -215,7 +216,12 @@ export function launchMacTerminalController(
   });
   let sidecarLaunch: NonNullable<InternalTerminalLaunchOptions['posixSidecar']> | undefined;
   try {
-    sidecarLaunch = createPosixSidecarLaunch(target, control, options);
+    sidecarLaunch = createPosixSidecarLaunch(
+      target,
+      control,
+      options,
+      macInheritedTargetEnvironment()
+    );
     const controlledOptions: InternalTerminalLaunchOptions = { ...options, posixSidecar: sidecarLaunch };
     const identity = launchMacTerminalIdentity(target, controlledOptions, control);
     const idleTimeoutMs = options.closeWaitTimeoutMs ?? 6_000;
