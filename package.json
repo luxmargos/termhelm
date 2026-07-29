@@ -1,6 +1,6 @@
 {
   "name": "@luxmargos/termhelm",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Launch and manage commands in native desktop terminal windows on macOS, Windows, and Linux.",
   "license": "MIT",
   "type": "module",
