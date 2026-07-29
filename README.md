@@ -228,15 +228,18 @@ A config without `options.label` launches in plain mode. `autoClose` and
 such as `labelScope`, `replaceLabels`, and managed timeouts require a label so a
 missing label can never silently downgrade a managed launch to plain behavior.
 
-When `autoClose` is `true`, TermHelm requests terminal UI closure only after
-authoritative completion of the owned process tree. On macOS it waits for the
-exact captured window-ID/TTY window to become idle and closes it only while it
-still contains the one owned tab; a window containing additional tabs is left
-open to avoid collateral closure. It never selects by title. Plain-launch
-macOS auto-close is delegated to a detached controller watcher, so it still
-works after the process that called `launchTerminalWindows()` exits. On Linux
-and Windows, final window disappearance remains subject to the terminal host's
-native completed-command behavior.
+`autoClose` controls terminal UI separately from process-tree termination.
+When it is `true`, TermHelm requests closure only after authoritative completion;
+when it is `false`, TermHelm never actively closes UI and asks capable Linux
+hosts to hold the completed window open. It never selects UI by title.
+
+UI results are reported per target as `closed`, `preserved`, `host-managed`,
+`refused-shared`, `cancelled`, or `unsupported`. macOS uses the exact captured
+window-ID/TTY and refuses a window containing additional tabs. Exact-process
+Linux adapters can report closure, while daemonized/multiplexed terminals and
+Windows console-host policy may report `host-managed`. Plain macOS also retains
+a detached watcher so requested closure can continue if the original caller
+exits.
 
 `shutdownDelayMs` is the graceful-stop period before escalation.
 `closeWaitTimeoutMs` is the following forced-stop confirmation period.
@@ -270,6 +273,8 @@ const plainSession = launchTerminalWindows(targets, {
 
 // Later, when the plain session is no longer needed:
 plainSession.close();
+const plainResult = await plainSession.closed;
+console.log(plainResult.uiCloseResults, plainResult.warnings);
 
 const managedSession = startManagedTerminalWindows(targets, {
   label: '<SESSION_LABEL>',
@@ -278,7 +283,12 @@ const managedSession = startManagedTerminalWindows(targets, {
 
 await managedSession.ready;
 const closeResult = await managedSession.close();
-console.log(closeResult.reason, closeResult.forcedTargetIds, closeResult.warnings);
+console.log(
+  closeResult.reason,
+  closeResult.forcedTargetIds,
+  closeResult.uiCloseResults,
+  closeResult.warnings
+);
 ```
 
 To stop an active managed session from another process:
@@ -294,10 +304,15 @@ Library target `cwd` values are optional and default to the canonical current
 working directory, matching inline CLI mode. An explicit value must be
 non-blank and resolve to an existing directory.
 
+`launchTerminalWindows()` returns a plain session whose `closed` promise settles
+after every target reaches authoritative terminal completion. Its result contains
+per-target UI outcomes and warnings; callers can still use the backward-compatible
+synchronous `close()` request.
+
 `startManagedTerminalWindows()` returns a session immediately. Its `ready`
 promise resolves only after every target controller reports ready; `close()` is
 idempotent and resolves after shutdown is confirmed. `closed` observes the same
-final result.
+final result, including forced target IDs and per-target UI outcomes.
 
 `launchManagedTerminalWindows(targets, options)` is the long-running convenience
 wrapper used by managed CLI launches. Its `options` argument and `options.label`
@@ -334,10 +349,12 @@ command.
   already started before rejecting the launch.
 - Managed fallback shells remain part of the owned process tree. On POSIX they
   accept commands without an interactive prompt, line editing, or job control.
-- Automatic terminal-window closure is opt-in through `autoClose`; completed UI
-  remains open by default for inspection. Linux guarantees process-group cleanup,
-  not disappearance for every emulator implementation. Descendants that leave
-  the owned POSIX process group are outside the portable ownership guarantee.
+- Automatic terminal-window closure is opt-in through `autoClose`. With it
+  disabled, TermHelm never initiates UI closure, but terminals that own their
+  native completed-command policy may still report `host-managed`. Linux
+  guarantees process-group cleanup, not identical visibility behavior across
+  every emulator. Descendants that leave the owned POSIX process group are
+  outside the portable ownership guarantee.
 
 Plain launches use the same target validation and partial-launch rollback, but
 only managed launches publish authenticated label ownership and support
@@ -362,12 +379,40 @@ Use `pnpm run demo:managed:smoke` for the non-GUI daemon contract check. See
 
 ## Platform Support
 
-- macOS: Terminal.app through `osascript`, with controller-owned process groups.
-- Windows: `cmd.exe` under the bundled PowerShell Job Object controller (`pwsh`
-  first, then Windows PowerShell 5.1).
-- Linux: `$TERMINAL`, `gnome-terminal`, `konsole`, `xfce4-terminal`,
-  `mate-terminal`, `lxterminal`, `xterm`, or `x-terminal-emulator`, with
-  controller-owned process groups.
+| Platform | Supported host | Notes |
+| --- | --- | --- |
+| macOS | Terminal.app | Exact window-ID/TTY identity; single-tab auto-close only. |
+| Windows | Dedicated `cmd.exe` console under PowerShell Job Object control | Requires `pwsh` or Windows PowerShell 5.1 to pass the bundled self-test. Default plain and managed state live below the current user's `LOCALAPPDATA` and use owner/SYSTEM-only inheritable DACLs. UTF-8 commands and literal `%` paths are supported. |
+| Linux | GNOME Terminal, Konsole, XFCE Terminal, xterm | Requires `bash` or `zsh` on `PATH` for the private controller wrapper; the target command still uses the user's login shell. |
+
+On Linux, `x-terminal-emulator` is accepted only when its resolved executable is
+one of the verified adapters above. An explicit unknown `$TERMINAL` fails closed
+instead of receiving guessed `-e` flags. MATE Terminal and LXTerminal are
+provisional pending native acceptance, and KGX remains experimental. Controller
+payloads are private files rather than command-line data, and `ps` is resolved
+through `PATH` for non-FHS systems.
+
+## Release verification
+
+No hosted CI is configured. Run the same repository gate natively on each release
+OS:
+
+```sh
+pnpm run verify:release
+```
+
+The gate requires native GUI prerequisites (`TERMHELM_MANUAL_MACOS=1` on macOS;
+Xvfb/desktop + xterm + `TERMHELM_LINUX_GUI_TEST=1` on Linux; Windows PowerShell
+5.1 and PowerShell 7 on Windows). It performs frozen install, build, public type
+checks, the full tracked test inventory, native helper checks, package creation,
+manifest validation, installation, import smoke testing, and executable-mode
+checks. `pnpm run verify:release:headless` is useful during development but is
+not release evidence.
+
+Manual release sign-off must additionally cover Windows Terminal and legacy
+Console Host plus GNOME Wayland/Xorg, KDE Konsole, and XFCE Terminal. Record UI
+outcomes and confirm no title-based selection, collateral shared-window closure,
+owned descendants, or authenticated state remain after failure.
 
 ## License
 

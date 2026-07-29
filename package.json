@@ -35,6 +35,8 @@
     "test": "vitest run",
     "test:types": "tsc -p tsconfig.public-api.json",
     "verify:windows-helpers": "node scripts/verify-windows-helpers.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "verify:release:headless": "node scripts/verify-release.mjs --headless",
     "prepack": "pnpm run build && pnpm run verify:windows-helpers"
   },
   "devDependencies": {

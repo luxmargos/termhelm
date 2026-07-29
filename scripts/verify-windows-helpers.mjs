@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { lstat, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,18 +30,59 @@ async function validatePowerShellController() {
     '[string] $PayloadPath',
     'ConvertFrom-Json -ErrorAction Stop',
     '[IO.File]::Delete($payloadFullPath)',
+    'foreach ($privatePath in @($commandFile, $exitMessageFile))',
     '$expectedSessionId = $payloadIdentity.Substring',
     'Controller payload identity does not match its filename.',
+    'Controller command-file identity is invalid.',
+    'Controller exit-message-file identity is invalid.',
     '[StringComparison]::Ordinal',
     '$runEntered = $true',
     'Write-PreLaunchFailureMarker $payload $payloadDirectory $expectedSessionId $expectedTargetId',
     '[TerminalWindows.PowerShellController]::Run(',
     'EntryPoint = "SetEnvironmentVariableW"',
     'ExactSpelling = true',
-    'CreateJobObject'
+    'CreateJobObject',
+    '" /d /q /v:off /c "'
   ];
   if (requiredSourceFragments.some(fragment => !source.includes(fragment))) {
     throw new Error(`Invalid Windows PowerShell controller: ${powerShellControllerRelativePath}`);
+  }
+  if (source.includes('/c call') || source.includes('paths containing percent signs are unsupported')) {
+    throw new Error(`Obsolete Windows command-file transport remains in ${powerShellControllerRelativePath}`);
+  }
+
+  if (process.platform === 'win32') {
+    const hosts = ['pwsh', 'powershell.exe'];
+    let available = 0;
+    for (const host of hosts) {
+      const probe = spawnSync(host, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      if (probe.error || probe.status !== 0) continue;
+      available += 1;
+      const parse = spawnSync(host, [
+        '-NoLogo', '-NoProfile', '-NonInteractive',
+        '-Command', '[void][ScriptBlock]::Create([IO.File]::ReadAllText($env:TERMHELM_CONTROLLER_PATH))'
+      ], {
+        encoding: 'utf8',
+        windowsHide: true,
+        env: { ...process.env, TERMHELM_CONTROLLER_PATH: controllerPath }
+      });
+      if (parse.error || parse.status !== 0) {
+        throw new Error(`${host} could not parse the bundled Windows controller: ${parse.stderr || parse.error?.message}`);
+      }
+      const selfTest = spawnSync(host, [
+        '-NoLogo', '-NoProfile', '-NonInteractive',
+        ...(host.toLowerCase().includes('powershell') ? ['-ExecutionPolicy', 'Bypass'] : []),
+        '-File', controllerPath,
+        '-SelfTest'
+      ], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+      if (selfTest.error || selfTest.status !== 0) {
+        throw new Error(`${host} failed the bundled Job Object/C# self-test: ${selfTest.stderr || selfTest.error?.message}`);
+      }
+    }
+    if (available === 0) throw new Error('No PowerShell host is available for native Windows helper verification.');
   }
 }
 
