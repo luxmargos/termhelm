@@ -21,8 +21,10 @@ headless servers or CI jobs without a graphical terminal.
    defaults to the current working directory.
 4. Plain mode launches the targets and returns a closeable session. Managed mode
    additionally owns each launched process tree, replaces an earlier session by
-   its required logical label, and waits for acknowledged shutdown. Window
-   titles remain display-only and are never used as process identity.
+   its required logical label, and waits for acknowledged shutdown. Detached
+   managed mode keeps that ownership in a hidden supervisor while the invoking
+   npm/CLI process returns after readiness. Window titles remain display-only
+   and are never used as process identity.
 
 ## Install
 
@@ -117,6 +119,35 @@ termhelm launch \
   --command "pnpm run dev"
 ```
 
+The default managed launch is foreground and remains alive as the process-tree
+supervisor. Add `--detach` when an npm script must continue after replacement
+and target readiness succeed:
+
+```sh
+termhelm launch \
+  --detach \
+  --label "local-api" \
+  --title "API development server" \
+  --command "pnpm run dev"
+```
+
+The supervisor is hidden; only the requested target terminal windows are shown.
+`--detach` requires a managed label and is invalid for plain launch and `kill`.
+For a config launch, either use `termhelm launch --detach --config <path>` or set
+its top-level `detached` field.
+
+An npm sequence can therefore advance without abandoning singleton replacement:
+
+```json
+{
+  "scripts": {
+    "terminals": "termhelm launch --detach --config termhelm.json",
+    "after-terminals": "node ./scripts/after-terminals.mjs",
+    "dev": "npm run terminals && npm run after-terminals"
+  }
+}
+```
+
 ### Config file
 
 `options.label` selects managed behavior in a config file. Omitting it selects
@@ -171,6 +202,7 @@ and must already exist.
 
 ```json
 {
+  "detached": true,
   "targets": [
     {
       "title": "<TERMINAL_WINDOW_TITLE>",
@@ -223,10 +255,14 @@ Managed defaults are:
 - `replaceTimeoutMs`: `shutdownDelayMs + closeWaitTimeoutMs + 3000`
 - `exitAfterCommand`: `true`
 
-A config without `options.label` launches in plain mode. `autoClose` and
-`exitAfterCommand` work in both plain and managed modes. Managed-only options
-such as `labelScope`, `replaceLabels`, and managed timeouts require a label so a
-missing label can never silently downgrade a managed launch to plain behavior.
+A config without `options.label` launches in plain mode. Top-level `detached`
+defaults to `false`, must be a boolean, and can be `true` only when
+`options.label` is present. It controls CLI orchestration rather than managed
+launch options; the library selects the same behavior by calling the detached
+function. `autoClose` and `exitAfterCommand` work in both plain and managed
+modes. Managed-only options such as `labelScope`, `replaceLabels`, and managed
+timeouts require a label so a missing label can never silently downgrade a
+managed launch to plain behavior.
 
 `autoClose` controls terminal UI separately from process-tree termination.
 When it is `true`, TermHelm requests closure only after authoritative completion;
@@ -255,6 +291,7 @@ within that range.
 
 ```ts
 import {
+  launchDetachedManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
 } from '@luxmargos/termhelm';
@@ -289,6 +326,15 @@ console.log(
   closeResult.uiCloseResults,
   closeResult.warnings
 );
+
+// For a short-lived npm/Node launcher, transfer supervision to a hidden child.
+const detached = await launchDetachedManagedTerminalWindows(targets, {
+  label: '<SESSION_LABEL>',
+  autoClose: true
+});
+console.log(detached.label, detached.sessionId);
+// This process may now exit; use killManagedTerminalWindows(detached.label)
+// from this or another process when the session should stop.
 ```
 
 To stop an active managed session from another process:
@@ -314,10 +360,27 @@ promise resolves only after every target controller reports ready; `close()` is
 idempotent and resolves after shutdown is confirmed. `closed` observes the same
 final result, including forced target IDs and per-target UI outcomes.
 
-`launchManagedTerminalWindows(targets, options)` is the long-running convenience
-wrapper used by managed CLI launches. Its `options` argument and `options.label`
-are required; invalid labels throw before any registry, filesystem, replacement,
-or process operation.
+`launchManagedTerminalWindows(targets, options)` is the long-running foreground
+convenience wrapper. Its `options` argument and `options.label` are required;
+invalid labels throw before any registry, filesystem, replacement, or process
+operation.
+
+`launchDetachedManagedTerminalWindows(targets, options)` starts a hidden,
+stdio-isolated supervisor and resolves with `{ label, sessionId }` only after the
+existing same-label session has stopped and every new target has acknowledged
+readiness. Inputs are validated before spawning and again in the child; commands
+and target environment values travel over a short-lived versioned IPC channel,
+not argv. The result is a point-in-time readiness acknowledgement rather than an
+in-process session handle. Stop it by authenticated label with
+`killManagedTerminalWindows()` or `termhelm kill`.
+
+After the child accepts a valid launch payload, closing or force-ending the
+invoking npm terminal does not cancel supervision. Closing target terminals is
+observed through the normal managed lifecycle. If the hidden supervisor exits
+normally or abruptly, controller-channel/token loss fails closed by stopping
+its owned process trees; a later same-label operation uses the existing stale
+state recovery rules. OS logout, reboot, and power loss remain subject to native
+platform process-session behavior.
 
 A POSIX process terminated by a signal propagates the conventional shell status
 `128 + signal number` (`143` for `SIGTERM`). Package managers may still format
@@ -387,22 +450,24 @@ Do not run this command while any managed label for the user is active. Prefer
 works; manual removal is only recovery for already-unconfirmable affected state.
 A stale endpoint by itself never authorizes automatic replacement.
 
-## Realistic nested demo
+## Managed launch examples
 
-The tracked demo mirrors a local `fresh` workflow without containers: a plain
-terminal launches a managed supervisor, which launches HTTP, web, event-stream,
-and parent/child worker daemons in separate terminals. A second plain terminal
-performs health checks.
+The tracked demo mirrors a local `fresh` workflow without containers. Its
+default flow uses `launchDetachedManagedTerminalWindows()` to launch HTTP, web,
+event-stream, and parent/child worker daemons in separate terminals while a
+hidden supervisor retains ownership. After readiness, `fresh` opens a health
+monitor terminal and exits, so it can be followed by another npm script.
 
 ```sh
 pnpm run demo:managed:fresh
-# Run it again to exercise authenticated replacement and auto-close.
+# Run it again to exercise detached replacement and auto-close.
 pnpm run demo:managed:fresh
 pnpm run demo:managed:kill
 ```
 
-Use `pnpm run demo:managed:smoke` for the non-GUI daemon contract check. See
-`examples/managed-launch/README.md` for details.
+Use `pnpm run demo:managed:foreground` to compare the intentionally blocking
+`launchManagedTerminalWindows()` flow. Use `pnpm run demo:managed:smoke` for the
+non-GUI daemon contract check. See `examples/managed-launch/README.md` for details.
 
 ## Platform Support
 

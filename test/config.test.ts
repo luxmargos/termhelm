@@ -28,6 +28,23 @@ describe('config validation', () => {
     });
   });
 
+  it('validates detached config as a top-level managed execution mode', () => {
+    expect(validateTerminalWindowsConfig({
+      detached: true,
+      targets: [{ title: 'api', command: 'pnpm dev' }],
+      options: { label: 'dev' }
+    })).toMatchObject({ detached: true, options: { label: 'dev' } });
+    expect(() => validateTerminalWindowsConfig({
+      detached: 'yes',
+      targets: [{ title: 'api', command: 'pnpm dev' }],
+      options: { label: 'dev' }
+    })).toThrow('Config detached must be a boolean');
+    expect(() => validateTerminalWindowsConfig({
+      detached: true,
+      targets: [{ title: 'api', command: 'pnpm dev' }]
+    })).toThrow('Config detached requires managed options.label');
+  });
+
   it('defaults an omitted target cwd and validates an explicit cwd like inline CLI mode', () => {
     expect(validateTerminalTarget({ title: 'api', command: 'pnpm dev' }).cwd).toBe(
       realpathSync(process.cwd())

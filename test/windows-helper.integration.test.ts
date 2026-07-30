@@ -4,6 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  killManagedTerminalWindows,
+  launchDetachedManagedTerminalWindows
+} from '../src/index.js';
+import { launchDetachedManagedTerminalWindowsWithHooks } from '../src/detached.js';
 import { startManagedTerminalWindows } from '../src/managed.js';
 import { launchWindowsTerminalController } from '../src/platforms/windows.js';
 
@@ -155,6 +160,47 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== 'win32')('PowerShell managed Windows integration', () => {
+  it('hides the detached supervisor, cleans trees after abrupt supervisor death, and recovers', async () => {
+    const directory = temporaryDirectory();
+    const scriptPath = replacementTreeScript(directory);
+    const label = `windows-detached-${randomUUID()}`;
+    const options = {
+      label,
+      shutdownDelayMs: 1_000,
+      closeWaitTimeoutMs: 5_000,
+      replaceTimeoutMs: 9_000,
+      autoClose: true
+    } as const;
+
+    try {
+      let supervisorPid: number | undefined;
+      await launchDetachedManagedTerminalWindowsWithHooks([{
+        title: 'TermHelm hidden detached Windows supervisor',
+        cwd: directory,
+        command: replacementTreeCommand(scriptPath, directory, 'old', 0)
+      }], options, {
+        onSupervisorSpawn: pid => { supervisorPid = pid; }
+      });
+      waitForFileLines(join(directory, 'old-started.txt'), 3);
+      expect(supervisorPid).toBeTypeOf('number');
+      process.kill(supervisorPid!, 'SIGKILL');
+      waitForFileLines(join(directory, 'old-stopped.txt'), 3, 12_000);
+
+      await launchDetachedManagedTerminalWindows([{
+        title: 'TermHelm recovered detached Windows supervisor',
+        cwd: directory,
+        command: replacementTreeCommand(scriptPath, directory, 'new', 0)
+      }], options);
+      waitForFileLines(join(directory, 'new-started.txt'), 3);
+      await expect(killManagedTerminalWindows(label, { timeoutMs: 9_000 })).resolves.toMatchObject({
+        status: 'killed'
+      });
+      waitForFileLines(join(directory, 'new-stopped.txt'), 3, 12_000);
+    } finally {
+      await killManagedTerminalWindows(label, { timeoutMs: 9_000 }).catch(() => undefined);
+    }
+  }, 60_000);
+
   it('replaces a real same-label tree without old/new process overlap', async () => {
     const directory = temporaryDirectory();
     const scriptPath = replacementTreeScript(directory);

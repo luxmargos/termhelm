@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   killManagedTerminalWindows: vi.fn(),
+  launchDetachedManagedTerminalWindows: vi.fn(),
   launchManagedTerminalWindows: vi.fn(),
   launchTerminalWindows: vi.fn()
 }));
@@ -25,6 +26,10 @@ beforeEach(() => {
     status: 'killed',
     label: 'dev',
     sessionId: '00000000-0000-4000-8000-000000000001'
+  });
+  api.launchDetachedManagedTerminalWindows.mockResolvedValue({
+    label: 'dev',
+    sessionId: '00000000-0000-4000-8000-000000000002'
   });
 });
 
@@ -50,14 +55,16 @@ function output() {
 
 function configFile(
   options?: Record<string, unknown>,
-  targets: Record<string, unknown>[] = [{ title: 'api', command: 'pnpm dev' }]
+  targets: Record<string, unknown>[] = [{ title: 'api', command: 'pnpm dev' }],
+  detached?: boolean
 ): string {
   const directory = mkdtempSync(join(tmpdir(), 'termhelm-cli-'));
   temporaryDirectories.push(directory);
   const path = join(directory, 'termhelm.json');
   writeFileSync(path, JSON.stringify({
     targets,
-    ...(options === undefined ? {} : { options })
+    ...(options === undefined ? {} : { options }),
+    ...(detached === undefined ? {} : { detached })
   }));
   return path;
 }
@@ -85,6 +92,44 @@ describe('CLI entry point', () => {
       expect.objectContaining({ label: 'dev', labelScope: { type: 'user' } })
     );
     expect(api.launchTerminalWindows).not.toHaveBeenCalled();
+  });
+
+  it('uses detached launch for inline, config, and CLI config override modes', async () => {
+    const messages = output();
+    await expect(runTerminalWindowsCli([
+      'launch', '--detach', '--label', 'dev', '--title', 'api', '--command', 'pnpm dev'
+    ], messages.sink)).resolves.toBe(0);
+    expect(api.launchDetachedManagedTerminalWindows).toHaveBeenCalledWith(
+      [expect.objectContaining({ title: 'api' })],
+      expect.objectContaining({ label: 'dev' })
+    );
+
+    const configured = configFile({ label: 'dev' }, undefined, true);
+    await expect(runTerminalWindowsCli(['launch', '--config', configured], messages.sink)).resolves.toBe(0);
+    const overridden = configFile({ label: 'dev' });
+    await expect(runTerminalWindowsCli([
+      'launch', '--detach', '--config', overridden
+    ], messages.sink)).resolves.toBe(0);
+
+    expect(api.launchDetachedManagedTerminalWindows).toHaveBeenCalledTimes(3);
+    expect(api.launchManagedTerminalWindows).not.toHaveBeenCalled();
+    expect(messages.stdout).toEqual([
+      'Started detached managed terminal session "dev" (00000000-0000-4000-8000-000000000002).',
+      'Started detached managed terminal session "dev" (00000000-0000-4000-8000-000000000002).',
+      'Started detached managed terminal session "dev" (00000000-0000-4000-8000-000000000002).'
+    ]);
+  });
+
+  it('rejects a detached CLI override for a plain config', async () => {
+    const messages = output();
+    const plain = configFile({ exitAfterCommand: false });
+    await expect(runTerminalWindowsCli([
+      'launch', '--detach', '--config', plain
+    ], messages.sink)).resolves.toBe(1);
+    expect(api.launchDetachedManagedTerminalWindows).not.toHaveBeenCalled();
+    expect(messages.stderr).toEqual([
+      'termhelm: --detach requires a managed config with options.label.'
+    ]);
   });
 
   it('selects plain or managed config launch based on options.label', async () => {

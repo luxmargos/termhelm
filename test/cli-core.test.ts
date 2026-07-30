@@ -11,6 +11,12 @@ describe('CLI argument parsing', () => {
       help: false,
       configPath: 'termhelm.json'
     });
+    expect(parseTerminalWindowsCliArgs(['launch', '--detach', '--config', 'termhelm.json'])).toEqual({
+      mode: 'launch',
+      help: false,
+      configPath: 'termhelm.json',
+      detached: true
+    });
   });
 
   it('parses kill config mode', () => {
@@ -75,6 +81,19 @@ describe('CLI argument parsing', () => {
         replaceLabels: []
       }
     });
+  });
+
+  it('parses detached mode only for managed launch', () => {
+    expect(parseTerminalWindowsCliArgs([
+      'launch', '--detach', '--label', 'local-dev', '--title', 'api', '--command', 'pnpm dev'
+    ])).toMatchObject({ detached: true, managedOptions: { label: 'local-dev' } });
+    expect(() => parseTerminalWindowsCliArgs([
+      'launch', '--detach', '--title', 'api', '--command', 'pnpm dev'
+    ])).toThrow('--detach requires a managed --label');
+    expect(() => parseTerminalWindowsCliArgs(['kill', '--detach', '--label', 'local-dev']))
+      .toThrow('--detach is valid only for managed launch');
+    expect(() => parseTerminalWindowsCliArgs(['kill', '--detach', '--config', 'termhelm.json']))
+      .toThrow('--detach is valid only for managed launch');
   });
 
   it('validates a managed label before resolving the inline cwd', () => {
@@ -188,7 +207,8 @@ describe('CLI argument parsing', () => {
 
   it('provides help text', () => {
     expect(parseTerminalWindowsCliArgs(['--help'])).toEqual({ help: true });
-    expect(helpText()).toContain('termhelm launch [--label <label>]');
+    expect(helpText()).toContain('termhelm launch [--detach] [--label <label>]');
+    expect(helpText()).toContain('--detach');
     expect(helpText()).toContain('termhelm kill --label <label>');
     expect(helpText()).toContain('A launch with a label is managed');
     expect(helpText()).toContain('Defaults to the current working directory');

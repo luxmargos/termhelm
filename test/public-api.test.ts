@@ -77,6 +77,7 @@ vi.mock('../src/platforms/windows.js', async importOriginal => {
 });
 
 import {
+  launchDetachedManagedTerminalWindows,
   launchManagedTerminalWindows,
   launchTerminalWindows,
   MANAGED_TERMINAL_LABEL_ERROR,
@@ -106,6 +107,9 @@ describe('managed public API boundary', () => {
 
     expect(() => startManagedTerminalWindows([target], undefined as never)).toThrow(MANAGED_TERMINAL_LABEL_ERROR);
     await expect(launchManagedTerminalWindows([target], undefined as never)).rejects.toThrow(MANAGED_TERMINAL_LABEL_ERROR);
+    await expect(launchDetachedManagedTerminalWindows([target], undefined as never)).rejects.toThrow(
+      MANAGED_TERMINAL_LABEL_ERROR
+    );
 
     expect(managerActivity.ensureSessionDirectory).not.toHaveBeenCalled();
     expect(managerActivity.writeSessionRecord).not.toHaveBeenCalled();

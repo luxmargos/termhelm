@@ -93,6 +93,7 @@ function verifyPackedArtifact() {
       'dist/index.js',
       'dist/index.d.ts',
       'dist/cli.js',
+      'dist/detached-supervisor.js',
       'dist/platforms/posix-sidecar.js',
       'dist/platforms/linux-launcher-watch.js',
       'native/windows/termhelm-controller.ps1',
@@ -110,6 +111,8 @@ function verifyPackedArtifact() {
       "import * as termhelm from '@luxmargos/termhelm';",
       "import metadata from '@luxmargos/termhelm/package.json' with { type: 'json' };",
       "if (typeof termhelm.launchTerminalWindows !== 'function') throw new Error('Missing launch API');",
+      "if (typeof termhelm.startManagedTerminalWindows !== 'function') throw new Error('Missing managed session API');",
+      "if (typeof termhelm.launchDetachedManagedTerminalWindows !== 'function') throw new Error('Missing detached managed API');",
       `if (metadata.version !== ${JSON.stringify(metadata.version)}) throw new Error('Version mismatch');`
     ].join('\n'));
     run(node, [join(directory, 'import-smoke.mjs')], { cwd: directory });

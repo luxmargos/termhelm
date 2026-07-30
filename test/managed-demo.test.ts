@@ -2,18 +2,20 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-describe('realistic nested managed-launch demo', () => {
-  it('publishes fresh, kill, and non-GUI smoke scripts with all daemon fixtures', () => {
+describe('managed-launch examples', () => {
+  it('publishes detached fresh, foreground, kill, and non-GUI smoke scripts with all fixtures', () => {
     const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
       scripts?: Record<string, string>;
     };
     expect(packageJson.scripts).toMatchObject({
       'demo:managed:fresh': expect.stringContaining('examples/managed-launch/fresh.mjs'),
+      'demo:managed:foreground': expect.stringContaining('examples/managed-launch/supervisor.mjs'),
       'demo:managed:kill': expect.stringContaining('examples/managed-launch/kill.mjs'),
       'demo:managed:smoke': expect.stringContaining('examples/managed-launch/smoke.mjs')
     });
     for (const path of [
       'examples/managed-launch/fresh.mjs',
+      'examples/managed-launch/session.mjs',
       'examples/managed-launch/supervisor.mjs',
       'examples/managed-launch/monitor.mjs',
       'examples/managed-launch/kill.mjs',
@@ -25,6 +27,12 @@ describe('realistic nested managed-launch demo', () => {
     ]) {
       expect(existsSync(path), path).toBe(true);
     }
+    expect(readFileSync('examples/managed-launch/fresh.mjs', 'utf8')).toContain(
+      'launchDetachedManagedTerminalWindows'
+    );
+    expect(readFileSync('examples/managed-launch/supervisor.mjs', 'utf8')).toContain(
+      'launchManagedTerminalWindows'
+    );
   });
 
   it('starts every mock daemon, checks health, and drains the worker tree', () => {
@@ -34,6 +42,6 @@ describe('realistic nested managed-launch demo', () => {
       timeout: 30_000
     });
     expect(output).toContain('[demo-smoke] all mock daemons and health checks passed');
-    expect(output).toContain('[demo-monitor] nested managed launch is ready');
+    expect(output).toContain('[demo-monitor] detached managed launch is ready');
   });
 });

@@ -27,4 +27,4 @@ async function waitForHealthy(name, url) {
 
 await Promise.all(endpoints.map(([name, url]) => waitForHealthy(name, url)));
 const time = await fetch(`http://127.0.0.1:${process.env.TERMHELM_DEMO_API_PORT ?? '43801'}/api/time`).then(response => response.json());
-console.log(`[demo-monitor] nested managed launch is ready: ${JSON.stringify(time)}`);
+console.log(`[demo-monitor] detached managed launch is ready: ${JSON.stringify(time)}`);

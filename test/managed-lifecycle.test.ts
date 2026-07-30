@@ -129,6 +129,7 @@ vi.mock('../src/platforms/windows.js', () => ({
 import {
   killManagedTerminalWindows,
   launchManagedTerminalWindows,
+  runManagedTerminalSupervisor,
   startManagedTerminalWindows
 } from '../src/managed.js';
 import { TerminalControllerLaunchError, type TerminalProcessController } from '../src/platforms/controller.js';
@@ -183,6 +184,30 @@ describe('managed lifecycle state machine', () => {
     } finally {
       process.exitCode = previousExitCode;
     }
+  });
+
+  it('keeps supervising when a detached readiness observer disappears', async () => {
+    fakePlatform.reset();
+    const label = `observer-loss-${randomUUID()}`;
+    let notificationCount = 0;
+    const operation = runManagedTerminalSupervisor([target('observer-loss')], {
+      label,
+      shutdownDelayMs: 0,
+      closeWaitTimeoutMs: 500,
+      replaceTimeoutMs: 3_000
+    }, {
+      onReady: async () => {
+        notificationCount += 1;
+        setTimeout(() => {
+          void killManagedTerminalWindows(label, { timeoutMs: 3_000 });
+        }, 0);
+        throw new Error('readiness observer disconnected');
+      }
+    });
+
+    await expect(operation).resolves.toBeUndefined();
+    expect(notificationCount).toBe(1);
+    expect(fakePlatform.controllers.some(controller => controller.active)).toBe(false);
   });
 
   it('replaces by authenticated label acknowledgement without old/new overlap or title selection', async () => {

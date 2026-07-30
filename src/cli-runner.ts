@@ -5,6 +5,7 @@ import {
 } from './config.js';
 import {
   killManagedTerminalWindows,
+  launchDetachedManagedTerminalWindows,
   launchManagedTerminalWindows,
   launchTerminalWindows,
   readTerminalWindowsConfig
@@ -49,9 +50,19 @@ async function executeTerminalWindowsCli(args: string[], output: CliOutput): Pro
       return;
     }
     const config = readTerminalWindowsConfig(request.configPath);
+    const detached = request.detached === true || config.detached === true;
     if (config.options?.label !== undefined) {
-      await launchManagedTerminalWindows(config.targets, validateManagedTerminalLaunchOptions(config.options));
+      const options = validateManagedTerminalLaunchOptions(config.options);
+      if (detached) {
+        const result = await launchDetachedManagedTerminalWindows(config.targets, options);
+        output.log(
+          `Started detached managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}).`
+        );
+      } else {
+        await launchManagedTerminalWindows(config.targets, options);
+      }
     } else {
+      if (detached) throw new Error('--detach requires a managed config with options.label.');
       launchTerminalWindows(config.targets, config.options ?? {});
     }
     return;
@@ -72,7 +83,14 @@ async function executeTerminalWindowsCli(args: string[], output: CliOutput): Pro
 
   if (request.target) {
     if (request.managedOptions) {
-      await launchManagedTerminalWindows([request.target], request.managedOptions);
+      if (request.detached) {
+        const result = await launchDetachedManagedTerminalWindows([request.target], request.managedOptions);
+        output.log(
+          `Started detached managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}).`
+        );
+      } else {
+        await launchManagedTerminalWindows([request.target], request.managedOptions);
+      }
     } else {
       launchTerminalWindows([request.target]);
     }

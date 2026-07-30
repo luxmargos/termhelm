@@ -101,6 +101,12 @@ export interface ManagedTerminalSession {
   close(): Promise<ManagedTerminalCloseResult>;
 }
 
+/** Point-in-time readiness result for a session owned by a detached supervisor. */
+export interface DetachedManagedTerminalLaunchResult {
+  readonly sessionId: string;
+  readonly label: string;
+}
+
 export interface ManagedTerminalKillOptions {
   /** User-global by default, or explicitly scoped to a canonical project root. */
   labelScope?: ManagedTerminalLabelScope;
@@ -134,6 +140,8 @@ export type TerminalWindowsConfigOptions =
 export interface TerminalWindowsConfig {
   targets: TerminalTarget[];
   options?: TerminalWindowsConfigOptions;
+  /** Run a managed config in a hidden detached supervisor. Requires options.label. */
+  detached?: boolean;
 }
 
 export type LinuxTerminalAdapterId =

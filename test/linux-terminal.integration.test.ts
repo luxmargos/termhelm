@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  killManagedTerminalWindows,
+  launchDetachedManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
 } from '../src/index.js';
+import { launchDetachedManagedTerminalWindowsWithHooks } from '../src/detached.js';
 import { posixShellQuote } from '../src/shell.js';
 
 const xterm = process.platform === 'linux'
@@ -110,6 +113,64 @@ describe.skipIf(!enabled)('native Linux xterm lifecycle', () => {
       command: 'exit 0'
     }], { autoClose: true })).toThrow('did not acknowledge readiness');
   }, 30_000);
+
+  it('keeps a detached supervisor hidden, fails closed on abrupt supervisor death, and recovers the label', async () => {
+    process.env.TERMINAL = xterm;
+    const directory = temporaryDirectory();
+    const label = `linux-detached-${randomUUID()}`;
+    const lifecycleScript = join(directory, 'detached-lifecycle.mjs');
+    writeFileSync(lifecycleScript, [
+      "import { writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      'const [directory, generation] = process.argv.slice(2);',
+      "writeFileSync(join(directory, generation + '-started'), String(process.pid));",
+      "const stop = () => { writeFileSync(join(directory, generation + '-stopped'), 'stopped'); process.exit(0); };",
+      "process.on('SIGTERM', stop);",
+      "process.on('SIGHUP', stop);",
+      'setInterval(() => {}, 1000);'
+    ].join('\n'));
+    const command = (generation: string) => [
+      posixShellQuote(process.execPath),
+      posixShellQuote(lifecycleScript),
+      posixShellQuote(directory),
+      posixShellQuote(generation)
+    ].join(' ');
+    const options = {
+      label,
+      shutdownDelayMs: 100,
+      closeWaitTimeoutMs: 2_000,
+      replaceTimeoutMs: 5_000,
+      autoClose: true
+    } as const;
+
+    try {
+      let supervisorPid: number | undefined;
+      await launchDetachedManagedTerminalWindowsWithHooks([{
+        title: 'TermHelm hidden detached Linux supervisor',
+        cwd: directory,
+        command: command('first')
+      }], options, {
+        onSupervisorSpawn: pid => { supervisorPid = pid; }
+      });
+      await waitFor(() => existsSync(join(directory, 'first-started')));
+      expect(supervisorPid).toBeTypeOf('number');
+      process.kill(supervisorPid!, 'SIGKILL');
+      await waitFor(() => existsSync(join(directory, 'first-stopped')));
+
+      await launchDetachedManagedTerminalWindows([{
+        title: 'TermHelm recovered detached Linux supervisor',
+        cwd: directory,
+        command: command('recovered')
+      }], options);
+      await waitFor(() => existsSync(join(directory, 'recovered-started')));
+      await expect(killManagedTerminalWindows(label, { timeoutMs: 5_000 })).resolves.toMatchObject({
+        status: 'killed'
+      });
+      await waitFor(() => existsSync(join(directory, 'recovered-stopped')));
+    } finally {
+      await killManagedTerminalWindows(label, { timeoutMs: 5_000 }).catch(() => undefined);
+    }
+  }, 45_000);
 
   it('replaces an authenticated managed xterm tree and confirms forced cleanup', async () => {
     process.env.TERMINAL = xterm;
