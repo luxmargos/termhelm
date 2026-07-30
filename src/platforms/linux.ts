@@ -193,6 +193,7 @@ function createLinuxLauncherWatchPayload(
     launchScriptPath,
     runnerPayloadPath: sidecarLaunch.payloadPath,
     finalizerPayloadPath: sidecarLaunch.finalizerPayloadPath,
+    detachedFinalizerPayloadPath: sidecarLaunch.detachedFinalizerPayloadPath,
     exactProcess,
     uiCloseRequestPath,
     uiCloseResultPath

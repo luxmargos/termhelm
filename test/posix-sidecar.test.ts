@@ -27,6 +27,7 @@ import type { InternalTerminalLaunchOptions, TerminalTarget } from '../src/types
 
 const temporaryDirectories: string[] = [];
 const childProcesses: ChildProcess[] = [];
+const runnerProcessGroups: number[] = [];
 
 function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'termhelm-sidecar-test-'));
@@ -64,7 +65,7 @@ function processIdentity(pid: number): { parentPid: number; processGroupId: numb
   return { parentPid: Number(match[1]), processGroupId: Number(match[2]) };
 }
 
-function writeProcessTree(directory: string, termBehavior: 'ignore' | 'exit'): {
+function writeProcessTree(directory: string, termBehavior: 'ignore' | 'exit', ignoreHangup = false): {
   rootScriptPath: string;
   rootPidPath: string;
   childPidPath: string;
@@ -85,28 +86,32 @@ function writeProcessTree(directory: string, termBehavior: 'ignore' | 'exit'): {
     ? "process.on('SIGTERM', () => {});"
     : `process.on('SIGTERM', () => { writeFileSync(process.env.${pathEnvironmentName}, 'SIGTERM\\n'); process.exit(0); });`;
 
+  const hangupHandler = ignoreHangup ? "process.on('SIGHUP', () => {});" : '';
   writeFileSync(grandchildScriptPath, [
     "import { writeFileSync } from 'node:fs';",
     "writeFileSync(process.env.GRANDCHILD_PID_PATH, `${process.pid}\\n`);",
+    hangupHandler,
     termHandler('GRANDCHILD_TERM_PATH'),
     'setInterval(() => {}, 1_000);'
-  ].join('\n'));
+  ].filter(Boolean).join('\n'));
   writeFileSync(childScriptPath, [
     "import { spawn } from 'node:child_process';",
     "import { writeFileSync } from 'node:fs';",
     "writeFileSync(process.env.CHILD_PID_PATH, `${process.pid}\\n`);",
+    hangupHandler,
     termHandler('CHILD_TERM_PATH'),
     "spawn(process.execPath, [process.env.GRANDCHILD_SCRIPT_PATH], { env: process.env, stdio: 'ignore' });",
     'setInterval(() => {}, 1_000);'
-  ].join('\n'));
+  ].filter(Boolean).join('\n'));
   writeFileSync(rootScriptPath, [
     "import { spawn } from 'node:child_process';",
     "import { writeFileSync } from 'node:fs';",
     "writeFileSync(process.env.ROOT_PID_PATH, `${process.pid}\\n`);",
+    hangupHandler,
     termHandler('ROOT_TERM_PATH'),
     "spawn(process.execPath, [process.env.CHILD_SCRIPT_PATH], { env: process.env, stdio: 'ignore' });",
     'setInterval(() => {}, 1_000);'
-  ].join('\n'));
+  ].filter(Boolean).join('\n'));
 
   return {
     rootScriptPath,
@@ -183,7 +188,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 }
 
 async function waitForExit(child: ChildProcess, timeoutMs = 5_000): Promise<number | null> {
-  if (child.exitCode !== null) return child.exitCode;
+  if (child.exitCode !== null || child.signalCode !== null) return child.exitCode;
   return await new Promise<number | null>((resolveExit, reject) => {
     const timer = setTimeout(() => reject(new Error('Timed out waiting for POSIX wrapper exit.')), timeoutMs);
     child.once('exit', code => {
@@ -195,6 +200,9 @@ async function waitForExit(child: ChildProcess, timeoutMs = 5_000): Promise<numb
 
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const processGroupId of runnerProcessGroups.splice(0)) {
+    try { process.kill(-processGroupId, 'SIGKILL'); } catch { /* The group already terminated. */ }
+  }
   for (const child of childProcesses.splice(0)) {
     if (child.pid && processExists(child.pid)) {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
@@ -224,18 +232,23 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
 
     expect(statSync(launch.payloadPath).mode & 0o777).toBe(0o600);
     expect(statSync(launch.finalizerPayloadPath).mode & 0o777).toBe(0o600);
+    expect(statSync(launch.detachedFinalizerPayloadPath).mode & 0o777).toBe(0o600);
     expect(launch.payloadPath).not.toContain(secretCommand);
     expect(launch.finalizerPayloadPath).not.toContain(secretToken);
     expect(payloadFromLaunch(launch)).toMatchObject({
       command: secretCommand,
       env: { TERMHELM_SECRET: secretEnvironment },
-      authenticationToken: secretToken
+      authenticationToken: secretToken,
+      detachedFinalizerPayloadPath: launch.detachedFinalizerPayloadPath
     });
     const finalizer = parsePosixSidecarPayload(readFileSync(launch.finalizerPayloadPath, 'utf8').trim());
+    const detachedFinalizer = parsePosixSidecarPayload(readFileSync(launch.detachedFinalizerPayloadPath, 'utf8').trim());
     expect(finalizer.command).toBe('');
     expect(finalizer.inheritedEnv).toBeUndefined();
     expect(finalizer.env).toBeUndefined();
     expect(finalizer.authenticationToken).toBeUndefined();
+    expect(finalizer.detachedFinalizerPayloadPath).toBeUndefined();
+    expect(detachedFinalizer).toEqual(finalizer);
   });
 
   it('accepts OS-compatible inherited names separately and rejects oversized payloads before launch', () => {
@@ -374,7 +387,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(readFileSync(outputPath, 'utf8')).toBe(explicitTemporaryDirectory);
   });
 
-  it('unlinks the sensitive runner payload before readiness and finalizer state after completion', async () => {
+  it('hands sanitized finalizer state to the detached watcher before readiness', async () => {
     const target: TerminalTarget = {
       title: 'payload lifetime',
       cwd: temporaryDirectory(),
@@ -385,6 +398,7 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     await waitFor(() => existsSync(control.readyPath));
     expect(existsSync(sidecarLaunch.payloadPath)).toBe(false);
     expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(true);
+    expect(existsSync(sidecarLaunch.detachedFinalizerPayloadPath)).toBe(false);
     rmSync(control.targetTokenPath);
     await waitFor(() => existsSync(control.stoppedPath));
     expect(await waitForExit(child)).toBe(143);
@@ -523,6 +537,46 @@ describe.skipIf(process.platform === 'win32')('POSIX Node group-leader runner', 
     expect(existsSync(control.failedPath)).toBe(false);
     expect(ownedPids.every(pid => !processExists(pid))).toBe(true);
     expect(processExists(unrelated.pid!)).toBe(true);
+  });
+
+  it('finalizes the owned tree when Terminal destroys the wrapper and sends SIGHUP to the foreground group', async () => {
+    const directory = temporaryDirectory();
+    const tree = writeProcessTree(directory, 'exit', true);
+    const target: TerminalTarget = {
+      title: 'terminal window closure',
+      cwd: directory,
+      command: `${posixShellQuote(process.execPath)} ${posixShellQuote(tree.rootScriptPath)}`,
+      env: tree.environment
+    };
+    const { child, control, sidecarLaunch, stderr } = launchWrapper(target, 1_000);
+    await waitFor(() => existsSync(control.readyPath)
+      && existsSync(tree.rootPidPath)
+      && existsSync(tree.childPidPath)
+      && existsSync(tree.grandchildPidPath));
+    const ownedPids = [readPid(tree.rootPidPath), readPid(tree.childPidPath), readPid(tree.grandchildPidPath)];
+    const runnerProcessGroupId = processIdentity(ownedPids[0]!).processGroupId;
+    runnerProcessGroups.push(runnerProcessGroupId);
+    expect(existsSync(sidecarLaunch.payloadPath)).toBe(false);
+    expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(true);
+    expect(existsSync(sidecarLaunch.detachedFinalizerPayloadPath)).toBe(false);
+
+    child.kill('SIGKILL');
+    try {
+      process.kill(-runnerProcessGroupId, 'SIGHUP');
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') throw error;
+    }
+
+    await waitFor(() => existsSync(control.stoppingPath));
+    await waitFor(() => existsSync(control.stoppedPath));
+    await waitFor(() => ownedPids.every(pid => !processExists(pid)));
+    await waitForExit(child);
+    expect(stderr()).not.toContain('termhelm POSIX controller:');
+    expect(existsSync(control.failedPath)).toBe(false);
+    expect(existsSync(`${control.stoppedPath}.runner-complete`)).toBe(false);
+    expect(existsSync(sidecarLaunch.payloadPath)).toBe(false);
+    expect(existsSync(sidecarLaunch.finalizerPayloadPath)).toBe(true);
+    expect(existsSync(sidecarLaunch.detachedFinalizerPayloadPath)).toBe(false);
   });
 
   it('cleans up the owned tree when the authenticated supervisor watch disconnects', async () => {

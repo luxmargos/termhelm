@@ -29,6 +29,7 @@ interface LinuxLauncherWatchPayload {
   launchScriptPath: string;
   runnerPayloadPath: string;
   finalizerPayloadPath: string;
+  detachedFinalizerPayloadPath: string;
   exactProcess: boolean;
   uiCloseRequestPath: string;
   uiCloseResultPath: string;
@@ -58,6 +59,7 @@ function parsePayload(value: unknown): LinuxLauncherWatchPayload {
   const launchScriptPath = absolutePath(value.launchScriptPath, 'launch script path');
   const runnerPayloadPath = absolutePath(value.runnerPayloadPath, 'runner payload path');
   const finalizerPayloadPath = absolutePath(value.finalizerPayloadPath, 'finalizer payload path');
+  const detachedFinalizerPayloadPath = absolutePath(value.detachedFinalizerPayloadPath, 'detached finalizer payload path');
   const uiCloseRequestPath = absolutePath(value.uiCloseRequestPath, 'UI-close request path');
   const uiCloseResultPath = absolutePath(value.uiCloseResultPath, 'UI-close result path');
   const controlDirectory = dirname(targetTokenPath);
@@ -68,6 +70,7 @@ function parsePayload(value: unknown): LinuxLauncherWatchPayload {
     launchScriptPath,
     runnerPayloadPath,
     finalizerPayloadPath,
+    detachedFinalizerPayloadPath,
     uiCloseRequestPath,
     uiCloseResultPath
   ].some(path => dirname(path) !== controlDirectory)) {
@@ -91,6 +94,7 @@ function parsePayload(value: unknown): LinuxLauncherWatchPayload {
     launchScriptPath,
     runnerPayloadPath,
     finalizerPayloadPath,
+    detachedFinalizerPayloadPath,
     exactProcess: value.exactProcess,
     uiCloseRequestPath,
     uiCloseResultPath
@@ -145,6 +149,7 @@ function preventDelayedTargetLaunch(payload: LinuxLauncherWatchPayload): void {
   rmSync(payload.launchScriptPath, { force: true });
   rmSync(payload.runnerPayloadPath, { force: true });
   rmSync(payload.finalizerPayloadPath, { force: true });
+  rmSync(payload.detachedFinalizerPayloadPath, { force: true });
 }
 
 function authoritativeSpawnFailure(payload: LinuxLauncherWatchPayload, error: Error): void {

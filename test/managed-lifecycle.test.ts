@@ -332,7 +332,7 @@ describe('managed lifecycle state machine', () => {
     }
   });
 
-  it('hands off a naturally stopped predecessor without deleting its owner evidence', async () => {
+  it('allows same-label replacement after the predecessor publishes authoritative stopped evidence', async () => {
     fakePlatform.reset();
     const label = `natural-handoff-${randomUUID()}`;
     const first = startManagedTerminalWindows([target('duplicate')], {
@@ -353,6 +353,8 @@ describe('managed lifecycle state machine', () => {
     await replacement.ready;
     await expect(first.closed).resolves.toMatchObject({ reason: expect.stringMatching(/target-exited|replaced/) });
     expect(fakePlatform.overlapDetected()).toBe(false);
+    expect(fakePlatform.controllers.filter(controller => controller.active)).toHaveLength(1);
+    expect(fakePlatform.controllers.find(controller => controller.active)?.sessionId).toBe(replacement.id);
     await replacement.close();
   });
 

@@ -34,12 +34,15 @@ const SOLO_SNAPSHOT_COUNT = 2;
 const MAX_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_PS_OUTPUT_BYTES = 8 * 1024 * 1024;
 const PS_TIMEOUT_MS = 2_000;
+const FINALIZER_START_TIMEOUT_MS = 5_000;
+const FINALIZER_WATCH_POLL_INTERVAL_MS = 100;
 
 export interface PosixSidecarPayload {
   version: 2;
   sessionId: string;
   targetId: string;
   targetTokenPath: string;
+  detachedFinalizerPayloadPath?: string;
   supervisorTokenPath?: string;
   readyPath: string;
   stoppingPath: string;
@@ -73,9 +76,14 @@ function writePrivatePayloadFile(path: string, payload: PosixSidecarPayload): vo
 
 function readAndRemovePrivatePayloadFile(path: string): PosixSidecarPayload {
   const resolvedPath = validatePath(path, 'payload path');
+  const claimedPath = `${resolvedPath}.${process.pid}.${randomUUID()}.claimed`;
+  if (dirname(claimedPath) !== dirname(resolvedPath)) {
+    throw new Error('POSIX controller payload claim path is invalid.');
+  }
+  renameSync(resolvedPath, claimedPath);
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(resolvedPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    descriptor = openSync(claimedPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const stats = fstatSync(descriptor);
     if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_PAYLOAD_BYTES * 2) {
       throw new Error('POSIX controller payload file is invalid.');
@@ -89,7 +97,7 @@ function readAndRemovePrivatePayloadFile(path: string): PosixSidecarPayload {
     return parsePosixSidecarPayload(readFileSync(descriptor, 'utf8').trim());
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
-    rmSync(resolvedPath, { force: true });
+    rmSync(claimedPath, { force: true });
   }
 }
 
@@ -98,6 +106,7 @@ export function cleanupPosixSidecarLaunch(
 ): void {
   rmSync(launch.payloadPath, { force: true });
   rmSync(launch.finalizerPayloadPath, { force: true });
+  rmSync(launch.detachedFinalizerPayloadPath, { force: true });
 }
 
 function bundledPosixSidecarScriptPath(): string {
@@ -114,11 +123,15 @@ export function createPosixSidecarLaunch(
   options: InternalTerminalLaunchOptions,
   inheritedEnvironment?: Readonly<Record<string, string>>
 ): NonNullable<InternalTerminalLaunchOptions['posixSidecar']> {
+  const payloadPath = join(control.directory, `${control.id}.runner.payload`);
+  const finalizerPayloadPath = join(control.directory, `${control.id}.finalizer.payload`);
+  const detachedFinalizerPayloadPath = join(control.directory, `${control.id}.detached-finalizer.payload`);
   const payload: PosixSidecarPayload = {
     version: 2,
     sessionId: control.sessionId,
     targetId: control.id,
     targetTokenPath: control.targetTokenPath,
+    detachedFinalizerPayloadPath,
     readyPath: control.readyPath,
     stoppingPath: control.stoppingPath,
     stoppedPath: control.stoppedPath,
@@ -145,28 +158,29 @@ export function createPosixSidecarLaunch(
     command: '',
     exitAfterCommand: true
   };
+  delete finalizerPayload.detachedFinalizerPayloadPath;
   delete finalizerPayload.inheritedEnv;
   delete finalizerPayload.env;
   delete finalizerPayload.exitMessage;
   delete finalizerPayload.supervisorTokenPath;
   delete finalizerPayload.controlEndpoint;
   delete finalizerPayload.authenticationToken;
-
-  const payloadPath = join(control.directory, `${control.id}.runner.payload`);
-  const finalizerPayloadPath = join(control.directory, `${control.id}.finalizer.payload`);
   try {
     writePrivatePayloadFile(payloadPath, payload);
     writePrivatePayloadFile(finalizerPayloadPath, finalizerPayload);
+    writePrivatePayloadFile(detachedFinalizerPayloadPath, finalizerPayload);
   } catch (error) {
     rmSync(payloadPath, { force: true });
     rmSync(finalizerPayloadPath, { force: true });
+    rmSync(detachedFinalizerPayloadPath, { force: true });
     throw error;
   }
   return {
     executablePath: process.execPath,
     scriptPath: bundledPosixSidecarScriptPath(),
     payloadPath,
-    finalizerPayloadPath
+    finalizerPayloadPath,
+    detachedFinalizerPayloadPath
   };
 }
 
@@ -258,6 +272,15 @@ export function parsePosixSidecarPayload(encoded: string): PosixSidecarPayload {
       throw new Error('POSIX controller marker paths must share the private target directory.');
     }
   }
+  const detachedFinalizerPayloadPath = value.detachedFinalizerPayloadPath === undefined
+    ? undefined
+    : validatePath(value.detachedFinalizerPayloadPath, 'detached finalizer payload path');
+  if (
+    detachedFinalizerPayloadPath !== undefined
+    && realpathSync(dirname(detachedFinalizerPayloadPath)) !== controlDirectory
+  ) {
+    throw new Error('POSIX controller detached finalizer payload must share the private target directory.');
+  }
 
   if (typeof value.exitAfterCommand !== 'boolean') {
     throw new Error('POSIX controller exit-after-command setting must be a boolean.');
@@ -267,6 +290,7 @@ export function parsePosixSidecarPayload(encoded: string): PosixSidecarPayload {
     sessionId: validateUuid(value.sessionId, 'session ID'),
     targetId: validateUuid(value.targetId, 'target ID'),
     targetTokenPath,
+    ...(detachedFinalizerPayloadPath === undefined ? {} : { detachedFinalizerPayloadPath }),
     readyPath,
     stoppingPath,
     stoppedPath,
@@ -298,6 +322,48 @@ export function parsePosixSidecarPayload(encoded: string): PosixSidecarPayload {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise(resolveDelay => setTimeout(resolveDelay, Math.max(0, milliseconds)));
+}
+
+async function startDetachedPosixFinalizer(payload: PosixSidecarPayload): Promise<void> {
+  const finalizerPayloadPath = payload.detachedFinalizerPayloadPath;
+  if (finalizerPayloadPath === undefined) {
+    throw new Error('POSIX controller detached finalizer payload path is required.');
+  }
+  const acknowledgementPath = `${finalizerPayloadPath}.${process.pid}.${randomUUID()}.watching`;
+  if (dirname(acknowledgementPath) !== dirname(finalizerPayloadPath)) {
+    throw new Error('POSIX controller finalizer acknowledgement path is invalid.');
+  }
+  const watcher = spawn(process.execPath, [
+    bundledPosixSidecarScriptPath(),
+    'watch-finalize',
+    finalizerPayloadPath,
+    String(process.pid),
+    acknowledgementPath
+  ], {
+    detached: true,
+    env: {},
+    stdio: 'ignore'
+  });
+  try {
+    await new Promise<void>((resolveSpawn, reject) => {
+      watcher.once('spawn', resolveSpawn);
+      watcher.once('error', reject);
+    });
+    watcher.unref();
+    const deadline = Date.now() + FINALIZER_START_TIMEOUT_MS;
+    while (!existsSync(acknowledgementPath)) {
+      if (watcher.exitCode !== null || watcher.signalCode !== null) {
+        throw new Error('Detached POSIX finalizer exited before acknowledging startup.');
+      }
+      if (Date.now() >= deadline) {
+        watcher.kill('SIGKILL');
+        throw new Error('Detached POSIX finalizer did not acknowledge startup.');
+      }
+      await delay(POLL_INTERVAL_MS);
+    }
+  } finally {
+    rmSync(acknowledgementPath, { force: true });
+  }
 }
 
 function marker(payload: PosixSidecarPayload, state: ManagedControllerState | 'failed' | 'forced'): string {
@@ -635,6 +701,7 @@ export async function runPosixRunner(payload: PosixSidecarPayload): Promise<numb
   };
 
   try {
+    await startDetachedPosixFinalizer(payload);
     if (payload.controlEndpoint && payload.authenticationToken) {
       watch = await watchManagedSupervisor({
         endpoint: payload.controlEndpoint,
@@ -718,11 +785,15 @@ export async function finalizePosixRunner(
   // `failed` is a terminal acknowledgement, not merely a diagnostic. Never
   // publish it while the original group is present or identity is ambiguous.
   if (!observedAbsent || groupPresence(processGroupId) !== 'absent') return false;
-  if (
-    existsSync(payload.failedPath) ||
-    !existsSync(payload.readyPath) ||
-    !existsSync(runnerCompletionPath(payload))
-  ) {
+  if (existsSync(payload.stoppedPath)) return true;
+  if (existsSync(payload.failedPath)) {
+    rmSync(runnerCompletionPath(payload), { force: true });
+    return false;
+  }
+  if (!existsSync(payload.readyPath) || !existsSync(runnerCompletionPath(payload))) {
+    // A concurrent finalizer publishes `stopped` before removing completion.
+    // Recheck it before converting missing completion into a failure marker.
+    if (existsSync(payload.stoppedPath)) return true;
     if (!existsSync(payload.failedPath)) writeFailed(payload);
     rmSync(runnerCompletionPath(payload), { force: true });
     return false;
@@ -757,6 +828,21 @@ export async function waitAndFinalizePosixRunner(
   }
 }
 
+export async function watchAndFinalizePosixRunner(
+  payload: PosixSidecarPayload,
+  processGroupId: number
+): Promise<boolean> {
+  if (!Number.isSafeInteger(processGroupId) || processGroupId <= 0) {
+    throw new Error('POSIX controller process group ID is invalid.');
+  }
+  for (;;) {
+    if (probePosixGroupAbsence(processGroupId)) {
+      return await finalizePosixRunner(payload, processGroupId, true);
+    }
+    await delay(FINALIZER_WATCH_POLL_INTERVAL_MS);
+  }
+}
+
 async function main(): Promise<void> {
   const mode = process.argv[2];
   if (mode === 'probe') {
@@ -768,6 +854,19 @@ async function main(): Promise<void> {
   const payload = readAndRemovePrivatePayloadFile(payloadPath);
   if (mode === 'run') {
     process.exitCode = await runPosixRunner(payload);
+    return;
+  }
+  if (mode === 'watch-finalize') {
+    const acknowledgementPath = validatePath(process.argv[5], 'finalizer acknowledgement path');
+    if (realpathSync(dirname(acknowledgementPath)) !== realpathSync(dirname(payload.targetTokenPath))) {
+      throw new Error('POSIX controller finalizer acknowledgement must share the private target directory.');
+    }
+    writeFileSync(acknowledgementPath, `${payload.sessionId}:${payload.targetId}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx'
+    });
+    process.exitCode = await watchAndFinalizePosixRunner(payload, Number(process.argv[4])) ? 0 : 1;
     return;
   }
   if (mode === 'wait-finalize') {

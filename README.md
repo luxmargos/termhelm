@@ -360,6 +360,33 @@ Plain launches use the same target validation and partial-launch rollback, but
 only managed launches publish authenticated label ownership and support
 label-based replacement or shutdown.
 
+### Recovering state left by affected POSIX builds
+
+The 0.2.4 POSIX wrapper can lose its sanitized finalizer payload when a Terminal
+window is closed with `SIGHUP`. The owned process group may already be gone while
+its session lacks the authoritative `stopped` or `failed` marker, so a later
+same-label launch correctly remains fail closed. Updated builds hand sanitized
+finalizer state to a detached watcher before target readiness, so finalization
+survives Terminal wrapper loss and can reclaim the record, socket, and session
+directory after authoritative process-group absence is confirmed.
+
+Existing state created by an affected build cannot be reclaimed automatically
+from a stale socket, saved PID, or `runner-complete` file alone: none proves that
+every owned descendant has terminated. First stop all TermHelm managed sessions
+for the current user and verify that no managed supervisor, POSIX sidecar, or
+owned workload remains. Only then may a macOS/Linux operator reset that user's
+version-2 runtime state:
+
+```sh
+runtime_directory="/tmp/termhelm-$(id -u)-v2"
+rm -rf -- "$runtime_directory"
+```
+
+Do not run this command while any managed label for the user is active. Prefer
+`termhelm kill --label "<SESSION_LABEL>"` when authenticated shutdown still
+works; manual removal is only recovery for already-unconfirmable affected state.
+A stale endpoint by itself never authorizes automatic replacement.
+
 ## Realistic nested demo
 
 The tracked demo mirrors a local `fresh` workflow without containers: a plain

@@ -131,7 +131,8 @@ describe('POSIX managed wrapper', () => {
           executablePath: process.execPath,
           scriptPath: join(tmpdir(), 'posix-sidecar.js'),
           payloadPath: join(tmpdir(), 'runner.payload'),
-          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload')
+          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload'),
+          detachedFinalizerPayloadPath: join(tmpdir(), 'detached-finalizer.payload')
         }
       },
       control
@@ -164,7 +165,8 @@ describe('POSIX managed wrapper', () => {
           executablePath: process.execPath,
           scriptPath: join(tmpdir(), 'posix-sidecar.js'),
           payloadPath: join(tmpdir(), 'runner.payload'),
-          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload')
+          finalizerPayloadPath: join(tmpdir(), 'finalizer.payload'),
+          detachedFinalizerPayloadPath: join(tmpdir(), 'detached-finalizer.payload')
         }
       },
       control

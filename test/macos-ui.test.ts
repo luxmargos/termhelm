@@ -288,12 +288,12 @@ describe('mocked macOS Terminal UI cleanup', () => {
       expect(launchScript).not.toContain('managed-command-sentinel');
       expect(launchScript).not.toContain('private-value');
       const payloadFiles = readdirSync(controlDirectory).filter(name => name.endsWith('.payload'));
-      expect(payloadFiles).toHaveLength(2);
-      const runnerPayload = payloadFiles
-        .map(name => parsePosixSidecarPayload(
-          readFileSync(join(controlDirectory, name), 'utf8').trim()
-        ))
-        .find(payload => payload.command === 'printf managed-command-sentinel');
+      expect(payloadFiles).toHaveLength(3);
+      const payloads = payloadFiles.map(name => parsePosixSidecarPayload(
+        readFileSync(join(controlDirectory, name), 'utf8').trim()
+      ));
+      const runnerPayload = payloads.find(payload => payload.command === 'printf managed-command-sentinel');
+      expect(payloads.filter(payload => payload.command === '')).toHaveLength(2);
       expect(runnerPayload?.inheritedEnv).toMatchObject({
         PATH: process.env.PATH,
         TMPDIR: automationEnvironment.TMPDIR

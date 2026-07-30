@@ -41,9 +41,11 @@ function runWatcher(
   const launchScriptPath = join(control.directory, `${control.id}.launch.sh`);
   const runnerPayloadPath = join(control.directory, `${control.id}.runner.payload`);
   const finalizerPayloadPath = join(control.directory, `${control.id}.finalizer.payload`);
+  const detachedFinalizerPayloadPath = join(control.directory, `${control.id}.detached-finalizer.payload`);
   writeFileSync(launchScriptPath, 'private launch\n', { mode: 0o600 });
   writeFileSync(runnerPayloadPath, 'private runner\n', { mode: 0o600 });
   writeFileSync(finalizerPayloadPath, 'private finalizer\n', { mode: 0o600 });
+  writeFileSync(detachedFinalizerPayloadPath, 'private detached finalizer\n', { mode: 0o600 });
   const uiCloseRequestPath = join(control.directory, `${control.id}.ui-close-request`);
   const uiCloseResultPath = join(control.directory, `${control.id}.ui-close-result.json`);
   if (markReady) writeFileSync(control.readyPath, terminalMarkerJson(control, 'ready'), { mode: 0o600 });
@@ -60,6 +62,7 @@ function runWatcher(
     launchScriptPath,
     runnerPayloadPath,
     finalizerPayloadPath,
+    detachedFinalizerPayloadPath,
     exactProcess,
     uiCloseRequestPath,
     uiCloseResultPath

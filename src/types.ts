@@ -42,6 +42,7 @@ export interface InternalTerminalLaunchOptions extends TerminalLaunchOptions {
     scriptPath: string;
     payloadPath: string;
     finalizerPayloadPath: string;
+    detachedFinalizerPayloadPath: string;
   };
 }
 

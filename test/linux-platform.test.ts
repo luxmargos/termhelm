@@ -188,7 +188,7 @@ describe('Linux terminal platform', () => {
       expect(launchScript).not.toContain(secretValue);
 
       const payloadFiles = readdirSync(controlDirectory).filter(name => name.endsWith('.payload'));
-      expect(payloadFiles).toHaveLength(2);
+      expect(payloadFiles).toHaveLength(3);
       for (const name of payloadFiles) {
         expect(statSync(join(controlDirectory, name)).mode & 0o777).toBe(0o600);
       }

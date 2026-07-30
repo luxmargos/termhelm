@@ -57,9 +57,11 @@ function buildManagedPosixSidecarCommand(
   const script = posixShellQuote(sidecar.scriptPath);
   const payloadPath = posixShellQuote(sidecar.payloadPath);
   const finalizerPayloadPath = posixShellQuote(sidecar.finalizerPayloadPath);
-  const cleanupCommand = `rm -f ${payloadPath} ${finalizerPayloadPath}`;
+  const exitCleanupCommand = `rm -f ${payloadPath} ${finalizerPayloadPath}`;
+  const signalCleanupCommand = `rm -f ${payloadPath}`;
   const commands = [
-    `trap ${posixShellQuote(cleanupCommand)} EXIT HUP INT TERM`,
+    `trap ${posixShellQuote(exitCleanupCommand)} EXIT`,
+    `trap ${posixShellQuote(signalCleanupCommand)} HUP INT TERM`,
     `set -m || { printf '%s\n' 'This shell does not support job control, so managed terminal mode cannot run.'; ${failedCommands.join('; ')}; exit 1; }`,
     `${runnerFunctionName}() {`,
     `  exec ${executable} ${script} run ${payloadPath}`,
