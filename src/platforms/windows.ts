@@ -25,7 +25,10 @@ import {
   sanitizeInheritedTemporaryDirectories,
   usableTemporaryDirectory
 } from './environment.js';
-import { revalidatePrivateWindowsDirectory } from './windows-security.js';
+import {
+  privateWindowsDirectoryIdentity,
+  revalidatePrivateWindowsDirectory
+} from './windows-security.js';
 
 const WINDOWS_POWERSHELL_CONTROLLER_NAME = 'termhelm-controller.ps1';
 const WINDOWS_CONTROLLER_PROBE_TIMEOUT_MS = 10_000;
@@ -233,12 +236,36 @@ function revalidateWindowsControlDirectory(
   });
 }
 
+/**
+ * Cheap node-only filesystem-identity recheck (no PowerShell spawn). Guards the
+ * files written after the single per-target ACL revalidation so a path
+ * replacement between writes is still detected without paying for another
+ * cold powershell.exe launch per file.
+ */
+function revalidateWindowsControlDirectoryIdentity(
+  control: ReturnType<typeof createTerminalControlPaths>,
+  description: string
+): void {
+  if (control.windowsDirectoryIdentity === undefined) return;
+  if (privateWindowsDirectoryIdentity(control.directory) !== control.windowsDirectoryIdentity) {
+    throw new Error(`Private Windows directory identity changed: ${control.directory} (${description})`);
+  }
+}
+
 function createWindowsCommandFile(
   target: Pick<TerminalTarget, 'command'>,
   options: InternalTerminalLaunchOptions,
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
-  revalidateWindowsControlDirectory(control, 'the terminal control directory before command-file creation');
+  // createTerminalControlPaths just validated this directory's ACL
+  // synchronously moments ago, with no async gap between that validation and
+  // these writes. Re-running a cold powershell.exe spawn here per target used
+  // to consume the managed launch replacement deadline for multi-target
+  // sessions. A cheap node-only identity check guards the writes against path
+  // replacement; ACL broadening in this synchronous microsecond window is
+  // not a realistic attack surface beyond what createTerminalControlPaths
+  // already rejected.
+  revalidateWindowsControlDirectoryIdentity(control, 'the terminal control directory before target file creation');
   const commandFile = join(control.directory, `${control.id}.cmd`);
   const lines = [
     '@echo off',
@@ -261,7 +288,7 @@ function createWindowsExitMessageFile(
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
   if (exitMessage === undefined) return '';
-  revalidateWindowsControlDirectory(control, 'the terminal control directory before exit-message creation');
+  revalidateWindowsControlDirectoryIdentity(control, 'the terminal control directory before exit-message creation');
   const messageFile = join(control.directory, `${control.id}.exit-message.txt`);
   writeFileSync(messageFile, `${exitMessage}\r\n`, { encoding: 'utf8', mode: 0o600 });
   return messageFile;
@@ -304,7 +331,7 @@ function createWindowsControllerPayloadFile(
   values: WindowsControllerArgumentValues,
   control: ReturnType<typeof createTerminalControlPaths>
 ): string {
-  revalidateWindowsControlDirectory(control, 'the terminal control directory before payload creation');
+  revalidateWindowsControlDirectoryIdentity(control, 'the terminal control directory before payload creation');
   const payloadPath = join(
     control.directory,
     `${control.sessionId}.${control.id}.controller.json`
@@ -365,7 +392,14 @@ export function launchWindowsTerminalController(
       backend.executable,
       powerShellWindowsControllerArguments(backend.scriptPath, payloadPath),
       {
-        detached: true,
+        // NOTE: do not use `detached: true` here. On Windows, a detached node
+        // spawn of a console-host PowerShell script can exit without running
+        // the script (~180ms no-op on this host), which silently drops the
+        // controller before it ever writes its ready marker. A plain (non-
+        // detached) child survives the launcher exiting on Windows, and the
+        // Job Object below owns the child process tree for the controller's
+        // lifetime; `unref()` decouples it from the Node event loop.
+        detached: false,
         stdio: 'ignore',
         windowsHide: true,
         // Parse/delete the payload and compile in the package environment.

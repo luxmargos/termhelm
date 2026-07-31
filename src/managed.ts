@@ -16,6 +16,7 @@ import {
   createManagedLaunchGeneration,
   createManagedSessionRecord,
   ensureManagedSessionDirectory,
+  ensureManagedTerminalRuntimeDirectory,
   inspectLegacySupervisorRecord,
   managedTargetMarkerPath,
   readManagedSessionRecord,
@@ -409,6 +410,12 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
       )
     ];
     this.replacementIdentities = [...new Map(identities.map(identity => [identity.key, identity])).values()];
+    // Establish and ACL-validate the managed runtime tree before any leaf
+    // helper (createManagedLaunchGeneration -> ticketsDirectory) materializes
+    // a child. Otherwise the child's recursive mkdir would create the
+    // protected root with an inherited (non-protected) ACL and fail its own
+    // validation below.
+    ensureManagedTerminalRuntimeDirectory();
     const generation = createManagedLaunchGeneration();
     this.record = createManagedSessionRecord({
       identity: this.currentIdentity,
@@ -554,6 +561,13 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
             controlEndpoint: this.record.controlEndpoint,
             authenticationToken: this.record.authenticationToken
           };
+          // Spawn every target controller up front (each launch is synchronous:
+          // it spawns the controller process and returns immediately). Serial
+          // launch-then-await-readiness serialized per-target Add-Type compiles
+          // and pipe handshakes, which on Windows consumed the whole replacement
+          // deadline for multi-target sessions. Launching all controllers first
+          // lets their independent compiles and Ctrl-watch handshakes overlap,
+          // then awaits every readiness concurrently.
           for (const ownedTarget of this.ownership) {
             this.assertLatestLaunchIntents();
             if (this.requestedStopReason) {
@@ -574,9 +588,11 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
               }
               throw error;
             }
+          }
+          await Promise.all(this.ownership.map(async ownedTarget => {
             await this.waitForTargetReadiness(ownedTarget.id, deadline);
             this.assertLatestLaunchIntents();
-          }
+          }));
           this.assertLatestLaunchIntents();
         } catch (error) {
           await this.rollbackLaunch(error);

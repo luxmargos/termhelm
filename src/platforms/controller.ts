@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type { TerminalUiCloseOutcome } from '../types.js';
 import {
   ensurePrivateWindowsDirectory,
+  ensurePrivateWindowsDirectoryTree,
   privateWindowsDirectoryIdentity,
   revalidatePrivateWindowsDirectory
 } from './windows-security.js';
@@ -164,17 +165,24 @@ export function createTerminalControlPaths(options: TerminalControllerOptions = 
   const directory = options.controlDirectory ?? join(root, `termhelm-target-${id}`);
   if (process.platform === 'win32') {
     if (ownsDirectory) {
-      ensurePrivateWindowsDirectory(root, {
-        protectedRoot: true,
-        description: 'the plain terminal state root'
-      });
+      // Plain launch: create and ACL-validate the protected root and the
+      // per-target control directory in a single PowerShell process. The
+      // previous per-directory spawn path cost up to ~4s of synchronous
+      // PowerShell startup before the controller could even be spawned.
+      ensurePrivateWindowsDirectoryTree(
+        [{ path: root, mode: 'protected' }, { path: directory, mode: 'protected' }],
+        { protectedRoot: true, description: 'the plain terminal control directory' }
+      );
+    } else {
+      // Managed launch: the manager already created and ACL-validated this
+      // inherited control directory (ensureManagedSessionDirectory) moments
+      // ago with no async gap. Re-running a cold powershell.exe spawn per
+      // target here serialized multi-target launches past the replacement
+      // deadline. Trust the manager's validation and capture the filesystem
+      // identity (which also verifies it is a real directory, not a symlink)
+      // with a cheap node-only check instead.
+      privateWindowsDirectoryIdentity(directory);
     }
-    ensurePrivateWindowsDirectory(directory, {
-      protectedRoot: ownsDirectory,
-      description: ownsDirectory
-        ? 'the plain terminal control directory'
-        : 'the managed terminal target control directory'
-    });
   } else {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     mkdirSync(directory, { recursive: !ownsDirectory, mode: 0o700 });
@@ -199,10 +207,13 @@ export function createTerminalControlPaths(options: TerminalControllerOptions = 
   };
   writeTerminalMarker(paths.targetTokenPath, `${process.pid}\n`);
   if (windowsDirectoryIdentity !== undefined) {
-    revalidatePrivateWindowsDirectory(directory, windowsDirectoryIdentity, {
-      protectedRoot: ownsDirectory,
-      description: 'the terminal control directory after ownership-token creation'
-    });
+    // Cheap node-only identity recheck after the token write (no PowerShell
+    // spawn). The ACL was validated by ensurePrivateWindowsDirectoryTree
+    // (plain) or by the manager (managed) immediately above with no async
+    // gap; this only needs to catch a path replacement between then and now.
+    if (privateWindowsDirectoryIdentity(directory) !== windowsDirectoryIdentity) {
+      throw new Error(`Private Windows directory identity changed: ${directory}`);
+    }
   }
   return paths;
 }

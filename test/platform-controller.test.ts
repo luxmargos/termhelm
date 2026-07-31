@@ -57,7 +57,7 @@ describe('terminal process controller', () => {
   it('secures an owned Windows control directory before writing its ownership token', () => {
     const source = readFileSync('src/platforms/controller.ts', 'utf8');
     const securitySource = readFileSync('src/platforms/windows-security.ts', 'utf8');
-    const securityIndex = source.indexOf('ensurePrivateWindowsDirectory(directory');
+    const securityIndex = source.indexOf('ensurePrivateWindowsDirectoryTree(');
     const tokenIndex = source.indexOf('writeTerminalMarker(paths.targetTokenPath');
     expect(securityIndex).toBeGreaterThan(0);
     expect(tokenIndex).toBeGreaterThan(securityIndex);

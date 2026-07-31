@@ -18,7 +18,10 @@ import {
 } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { ensurePrivateWindowsDirectory } from './platforms/windows-security.js';
+import {
+  ensurePrivateWindowsDirectory,
+  ensurePrivateWindowsDirectoryTree
+} from './platforms/windows-security.js';
 
 const REGISTRY_VERSION = 2 as const;
 const MAX_REGISTRY_FILE_SIZE = 64 * 1024;
@@ -223,20 +226,54 @@ function ensureSecureDirectory(path: string): void {
   chmodSync(path, 0o700);
 }
 
+const MANAGED_RUNTIME_CHILD_NAMES = ['records', 'locks', 'sessions', 'sockets', 'intents', 'tickets'] as const;
+
+/**
+ * Derives a runtime child directory path WITHOUT a PowerShell ACL re-spawn.
+ * The runtime tree is established and ACL-validated once at structured entry
+ * points (e.g. ensureManagedTerminalRuntimeDirectory / ensureManagedSessionDirectory).
+ * Leaf read/write helpers (records/locks/tickets/intents) only need the directory
+ * to exist; creating a child of a validated protected root inherits its ACL.
+ * Previously each of these calls re-ran a cold powershell.exe per access,
+ * which on Windows consumed the entire managed launch replacement deadline
+ * for multi-target sessions (assertLatestLaunchIntents alone spawned ~8 times).
+ */
+function ensureRuntimeChildDirectory(options: ManagedManagerStorageOptions, name: string): string {
+  const root = managedTerminalRuntimeDirectory(options);
+  const path = join(root, name);
+  assertContainedPath(root, path);
+  // Never create the protected root here with a recursive mkdir: an inherited
+  // (non-protected) root would then fail its own ACL validation. The runtime
+  // tree is established and ACL-validated by ensureManagedTerminalRuntimeDirectory
+  // at structured entry points; this leaf helper only materializes the child
+  // directory (inheriting the protected root's owner/SYSTEM-only ACL).
+  if (!existsSync(root)) {
+    ensureManagedTerminalRuntimeDirectory(options);
+  }
+  if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
+  return path;
+}
+
 export function ensureManagedTerminalRuntimeDirectory(options: ManagedManagerStorageOptions = {}): string {
   const root = managedTerminalRuntimeDirectory(options);
   if (process.platform === 'win32') {
-    // The helper creates a new root with its protected DACL in the same
-    // operation and revalidates the effective ACL on every call.
-    ensurePrivateWindowsDirectory(root, {
-      protectedRoot: true,
-      description: 'the managed terminal Windows runtime'
-    });
+    // Validate the protected root and every inherited child in a single
+    // PowerShell process. A per-directory spawn here (one for the root plus
+    // one per child) used to cost 7 cold PowerShell launches per call, which
+    // alone consumed the whole managed launch replacement deadline. ACLs are
+    // still revalidated on every call so in-place DACL broadening is detected.
+    const children = MANAGED_RUNTIME_CHILD_NAMES.map(name => join(root, name));
+    for (const path of children) assertContainedPath(root, path);
+    ensurePrivateWindowsDirectoryTree(
+      [{ path: root, mode: 'protected' }, ...children.map(path => ({ path, mode: 'inherited' as const }))],
+      { protectedRoot: true, description: 'the managed terminal Windows runtime' }
+    );
     verifyOwnedPath(root, 'directory');
-  } else {
-    ensureSecureDirectory(root);
+    for (const path of children) verifyOwnedPath(path, 'directory');
+    return root;
   }
-  for (const name of ['records', 'locks', 'sessions', 'sockets', 'intents', 'tickets']) {
+  ensureSecureDirectory(root);
+  for (const name of MANAGED_RUNTIME_CHILD_NAMES) {
     const path = join(root, name);
     assertContainedPath(root, path);
     ensureSecureDirectory(path);
@@ -245,15 +282,15 @@ export function ensureManagedTerminalRuntimeDirectory(options: ManagedManagerSto
 }
 
 function recordsDirectory(options: ManagedManagerStorageOptions): string {
-  return join(ensureManagedTerminalRuntimeDirectory(options), 'records');
+  return ensureRuntimeChildDirectory(options, 'records');
 }
 
 function locksDirectory(options: ManagedManagerStorageOptions): string {
-  return join(ensureManagedTerminalRuntimeDirectory(options), 'locks');
+  return ensureRuntimeChildDirectory(options, 'locks');
 }
 
 function ticketsDirectory(options: ManagedManagerStorageOptions): string {
-  return join(ensureManagedTerminalRuntimeDirectory(options), 'tickets');
+  return ensureRuntimeChildDirectory(options, 'tickets');
 }
 
 export function managedSessionRecordPath(
@@ -294,10 +331,21 @@ export function ensureManagedSessionDirectory(
 ): string {
   ensureManagedTerminalRuntimeDirectory(options);
   const path = managedSessionDirectory(sessionId, options);
-  ensureSecureDirectory(path);
   const targetsPath = join(path, 'targets');
   assertContainedPath(path, targetsPath);
-  ensureSecureDirectory(targetsPath);
+  if (process.platform === 'win32') {
+    // Validate the per-session directory and its `targets` child in a single
+    // PowerShell process instead of one spawn per directory.
+    ensurePrivateWindowsDirectoryTree(
+      [{ path, mode: 'inherited' }, { path: targetsPath, mode: 'inherited' }],
+      { protectedRoot: false, description: 'the managed terminal session directory' }
+    );
+    verifyOwnedPath(path, 'directory');
+    verifyOwnedPath(targetsPath, 'directory');
+  } else {
+    ensureSecureDirectory(path);
+    ensureSecureDirectory(targetsPath);
+  }
   return path;
 }
 
@@ -477,7 +525,19 @@ function isIsoDate(value: unknown): value is string {
 }
 
 function intentsDirectory(options: ManagedManagerStorageOptions): string {
-  return join(ensureManagedTerminalRuntimeDirectory(options), 'intents');
+  return ensureRuntimeChildDirectory(options, 'intents');
+}
+
+function managedLaunchIntentPathInDirectory(
+  directory: string,
+  identity: ManagedLabelIdentity,
+  sessionId: string
+): string {
+  assertIdentity(identity);
+  const id = validateUuid(sessionId, 'session ID');
+  const path = join(directory, `${identity.key}.${id}.json`);
+  assertContainedPath(directory, path);
+  return path;
 }
 
 function managedLaunchIntentPath(
@@ -485,12 +545,7 @@ function managedLaunchIntentPath(
   sessionId: string,
   options: ManagedManagerStorageOptions
 ): string {
-  assertIdentity(identity);
-  const id = validateUuid(sessionId, 'session ID');
-  const directory = intentsDirectory(options);
-  const path = join(directory, `${identity.key}.${id}.json`);
-  assertContainedPath(directory, path);
-  return path;
+  return managedLaunchIntentPathInDirectory(intentsDirectory(options), identity, sessionId);
 }
 
 function parseManagedLaunchIntent(
@@ -560,7 +615,7 @@ export function readManagedLaunchIntents(
     .filter(name => name.startsWith(prefix) && name.endsWith(suffix))
     .map(name => {
       const sessionId = name.slice(prefix.length, -suffix.length);
-      const path = managedLaunchIntentPath(identity, sessionId, options);
+      const path = managedLaunchIntentPathInDirectory(directory, identity, sessionId);
       try {
         return parseManagedLaunchIntent(readSecureJson(path), identity, sessionId);
       } catch (error) {
@@ -594,10 +649,13 @@ export function removeSupersededManagedLaunchIntents(
   options: ManagedManagerStorageOptions = {}
 ): void {
   assertManagedLaunchIntentIsLatest(identity, winner, options);
+  // Derive the intents directory path without re-validating the Windows
+  // runtime tree: the readManagedLaunchIntents call below already ensures it.
+  const directory = join(managedTerminalRuntimeDirectory(options), 'intents');
   for (const intent of readManagedLaunchIntents(identity, options)) {
     if (compareManagedLaunchIntents(intent, winner) >= 0) continue;
     try {
-      unlinkSync(managedLaunchIntentPath(identity, intent.sessionId, options));
+      unlinkSync(managedLaunchIntentPathInDirectory(directory, identity, intent.sessionId));
     } catch (error) {
       if (!isPlainObject(error) || error.code !== 'ENOENT') throw error;
     }

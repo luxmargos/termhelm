@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 
 const WINDOWS_PRIVATE_DIRECTORY_PATH_ENV = 'TERMHELM_PRIVATE_DIRECTORY_PATH';
 const WINDOWS_PRIVATE_DIRECTORY_MODE_ENV = 'TERMHELM_PRIVATE_DIRECTORY_MODE';
+const WINDOWS_PRIVATE_DIRECTORY_ENTRIES_ENV = 'TERMHELM_PRIVATE_DIRECTORY_ENTRIES';
 
 const WINDOWS_PRIVATE_DIRECTORY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -85,6 +86,132 @@ export interface PrivateWindowsDirectoryOptions {
   /** Protected roots are created atomically with inheritance disabled. */
   protectedRoot?: boolean;
   description?: string;
+}
+
+const WINDOWS_PRIVATE_DIRECTORY_TREE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$entriesJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Environment]::GetEnvironmentVariable('${WINDOWS_PRIVATE_DIRECTORY_ENTRIES_ENV}')))
+if ([String]::IsNullOrWhiteSpace($entriesJson)) { throw 'Missing private directory tree entries.' }
+$entries = $entriesJson | ConvertFrom-Json
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
+$inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+$propagation = [Security.AccessControl.PropagationFlags]::None
+$allow = [Security.AccessControl.AccessControlType]::Allow
+
+function Assert-PrivateDirectory([string]$candidate, [bool]$requireProtected) {
+  if (-not [IO.Directory]::Exists($candidate)) { throw "Private directory does not exist: $candidate" }
+  $attributes = [IO.File]::GetAttributes($candidate)
+  if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Private directory is a reparse point: $candidate"
+  }
+  $actual = [IO.Directory]::GetAccessControl($candidate, [Security.AccessControl.AccessControlSections]'Access,Owner')
+  if ($requireProtected -and -not $actual.AreAccessRulesProtected) {
+    throw "Private directory ACL inheritance is enabled: $candidate"
+  }
+  if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user.Value) {
+    throw "Private directory ACL owner mismatch: $candidate"
+  }
+  $userFullControl = $false
+  $systemFullControl = $false
+  foreach ($rule in $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    $sid = $rule.IdentityReference.Value
+    if ($rule.AccessControlType -ne $allow) { throw "Unexpected private directory deny rule: $sid" }
+    if ($sid -ne $user.Value -and $sid -ne $system.Value) {
+      throw "Unexpected private directory ACL principal: $sid"
+    }
+    $hasFullControl = (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl)
+    $hasContainerInheritance = (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -ne 0)
+    $hasObjectInheritance = (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) -ne 0)
+    if (-not $hasFullControl -or -not $hasContainerInheritance -or -not $hasObjectInheritance -or $rule.PropagationFlags -ne $propagation) {
+      throw "Incomplete or non-inheritable private directory ACL rights: $sid"
+    }
+    if ($sid -eq $user.Value) { $userFullControl = $true }
+    if ($sid -eq $system.Value) { $systemFullControl = $true }
+  }
+  if (-not $userFullControl -or -not $systemFullControl) {
+    throw "Private directory ACL does not grant FullControl to the owner and SYSTEM: $candidate"
+  }
+}
+
+foreach ($entry in $entries) {
+  if ($null -eq $entry -or [String]::IsNullOrWhiteSpace($entry.path) -or [String]::IsNullOrWhiteSpace($entry.mode)) {
+    throw 'Invalid private directory tree entry.'
+  }
+  $path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($entry.path))
+  $mode = $entry.mode
+  if ($mode -ne 'protected' -and $mode -ne 'inherited') { throw "Invalid private directory mode: $mode" }
+  $requireProtected = ($mode -eq 'protected')
+  if ([IO.Directory]::Exists($path)) {
+    Assert-PrivateDirectory $path $requireProtected
+  } elseif ($mode -eq 'protected') {
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($user)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($user, 'FullControl', $inheritance, $propagation, $allow)))
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($system, 'FullControl', $inheritance, $propagation, $allow)))
+    [void][IO.Directory]::CreateDirectory($path, $acl)
+    Assert-PrivateDirectory $path $true
+  } else {
+    [void][IO.Directory]::CreateDirectory($path)
+    Assert-PrivateDirectory $path $false
+  }
+}
+`;
+
+export interface PrivateWindowsDirectoryTreeEntry {
+  /** Resolved filesystem path. The first entry should be the protected root; later entries its children. */
+  path: string;
+  /** 'protected' roots disable ACL inheritance; 'inherited' entries must inherit only the protected root's rules. */
+  mode: 'protected' | 'inherited';
+}
+
+/**
+ * Establishes and revalidates a private Windows directory tree (one protected
+ * root plus zero or more inherited children) in a single PowerShell process.
+ * This is the batched equivalent of calling {@link ensurePrivateWindowsDirectory}
+ * per directory, but it collapses N spawns into one to stay within launch
+ * deadlines. Owned/owner revalidation semantics are identical: each existing
+ * directory is rechecked (no repair) on every call so in-place ACL broadening
+ * is still detected within the same process.
+ */
+export function ensurePrivateWindowsDirectoryTree(
+  entries: PrivateWindowsDirectoryTreeEntry[],
+  options: PrivateWindowsDirectoryOptions = {}
+): void {
+  if (process.platform !== 'win32') return;
+  if (entries.length === 0) return;
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot) {
+    throw new Error(`Cannot secure ${options.description ?? 'the Windows directory'} because SystemRoot is unavailable.`);
+  }
+  const encodedEntries = Buffer.from(
+    JSON.stringify(entries.map(entry => ({
+      path: Buffer.from(resolve(entry.path), 'utf8').toString('base64'),
+      mode: entry.mode
+    }))),
+    'utf8'
+  ).toString('base64');
+  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const result = spawnSync(powershell, [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-EncodedCommand', Buffer.from(WINDOWS_PRIVATE_DIRECTORY_TREE_SCRIPT, 'utf16le').toString('base64')
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    env: {
+      ...process.env,
+      [WINDOWS_PRIVATE_DIRECTORY_ENTRIES_ENV]: encodedEntries
+    }
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message ?? result.stderr.trim() ?? `exit status ${String(result.status)}`;
+    throw new Error(`Could not establish a private DACL for ${options.description ?? 'the Windows directory'}. ${detail}`);
+  }
 }
 
 export function ensurePrivateWindowsDirectory(
