@@ -29,6 +29,7 @@ import type {
 } from './types.js';
 
 export type {
+  DetachedManagedTerminalLaunchResult,
   LinuxLauncher,
   LinuxTerminalAdapterId,
   LinuxTerminalCapabilities,
@@ -71,6 +72,7 @@ export {
   launchManagedTerminalWindows,
   startManagedTerminalWindows
 } from './managed.js';
+export { launchDetachedManagedTerminalWindows } from './detached.js';
 
 class ControllerTerminalWindowSession implements TerminalWindowSession {
   private readonly closedPromise: Promise<TerminalWindowCloseResult>;

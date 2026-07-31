@@ -12,14 +12,15 @@ export interface CliRequest {
   configPath?: string;
   target?: ResolvedTerminalTarget;
   managedOptions?: ManagedTerminalLaunchOptions;
+  detached?: boolean;
 }
 
 export function helpText(): string {
   return `termhelm
 
 Usage:
-  termhelm launch --config <path>
-  termhelm launch [--label <label>] --title <title> [--cwd <cwd>] --command <command>
+  termhelm launch [--detach] --config <path>
+  termhelm launch [--detach] [--label <label>] --title <title> [--cwd <cwd>] --command <command>
   termhelm kill --config <path>
   termhelm kill --label <label> [--label-scope user|project] [--project-root <path>]
 
@@ -33,10 +34,12 @@ Options:
   --label <label>              Enable managed launch behavior, or select the session to kill.
   --label-scope user|project   Scope the managed label. Defaults to user.
   --project-root <path>        Project root. Defaults to the resolved --cwd for launch, or current directory for kill.
+  --detach                     Return after a managed session is ready and keep its supervisor hidden.
   --help                       Show this help text.
 
-A launch with a label is managed; a launch without one is plain. Config files
-select managed behavior by defining options.label. Kill reads the same label and
+A launch with a label is managed; a launch without one is plain. --detach is
+valid only for managed launch. Config files select managed behavior with
+options.label and can set top-level detached. Kill reads the same label and
 scope from the config used to launch the session.
 `;
 }
@@ -139,6 +142,7 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
       label: { type: 'string' },
       'label-scope': { type: 'string' },
       'project-root': { type: 'string' },
+      detach: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' }
     },
     allowPositionals: false
@@ -148,6 +152,7 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
 
   const values = parsed.values as CliValues;
   const configPath = values.config;
+  const detached = values.detach === true;
   const hasInlineTargetFlags = values.title !== undefined
     || values.cwd !== undefined
     || values.command !== undefined
@@ -155,10 +160,15 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
     || values['exit-message'] !== undefined;
   const hasIdentityFlags = hasManagedIdentityFlags(values);
 
+  if (mode === 'kill' && detached) throw new Error('--detach is valid only for managed launch.');
   if (typeof configPath === 'string' && (hasIdentityFlags || hasInlineTargetFlags)) {
     throw new Error('Use either --config or inline flags, not both; define labels and targets in the config file.');
   }
-  if (typeof configPath === 'string') return { mode, help: false, configPath };
+  if (typeof configPath === 'string') {
+    return detached
+      ? { mode, help: false, configPath, detached: true }
+      : { mode, help: false, configPath };
+  }
 
   if (mode === 'kill') {
     if (hasInlineTargetFlags) throw new Error('Kill accepts only managed label identity flags or --config.');
@@ -175,11 +185,13 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
     const managedOptions = label === undefined
       ? undefined
       : inlineManagedOptions(values, label, target.cwd);
+    if (detached && !managedOptions) throw new Error('--detach requires a managed --label.');
     return managedOptions
-      ? { mode, help: false, target, managedOptions }
+      ? { mode, help: false, target, managedOptions, ...(detached ? { detached: true } : {}) }
       : { mode, help: false, target };
   }
 
   if (hasIdentityFlags) validateManagedTerminalLabel(values.label);
+  if (detached) throw new Error('--detach requires a managed launch target or config.');
   throw new Error('Missing --config or inline target flags.');
 }

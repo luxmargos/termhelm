@@ -1,34 +1,35 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url';
-import { launchTerminalWindows, posixShellQuote } from '../../dist/index.js';
+import {
+  launchDetachedManagedTerminalWindows,
+  launchTerminalWindows,
+  posixShellQuote
+} from '../../dist/index.js';
+import {
+  demoEnvironment,
+  demoManagedOptions,
+  demoRoot,
+  demoTargets
+} from './session.mjs';
 
-const demoRoot = fileURLToPath(new URL('.', import.meta.url));
 const command = name => `${posixShellQuote(process.execPath)} ${posixShellQuote(fileURLToPath(new URL(`./${name}.mjs`, import.meta.url)))}`;
-const environment = {
-  TERMHELM_DEMO_API_PORT: process.env.TERMHELM_DEMO_API_PORT ?? '43801',
-  TERMHELM_DEMO_WEB_PORT: process.env.TERMHELM_DEMO_WEB_PORT ?? '43802',
-  TERMHELM_DEMO_EVENT_PORT: process.env.TERMHELM_DEMO_EVENT_PORT ?? '43803'
-};
 
-launchTerminalWindows([
-  {
-    title: 'termhelm-demo-supervisor',
-    cwd: demoRoot,
-    command: command('supervisor'),
-    env: environment,
-    exitMessage: '[demo] Managed supervisor completed.'
-  }
-], { autoClose: true, exitAfterCommand: true });
+console.log('[demo-fresh] replacing the managed session in a hidden detached supervisor');
+const result = await launchDetachedManagedTerminalWindows(
+  demoTargets(),
+  demoManagedOptions()
+);
+console.log(`[demo-fresh] detached session ready: label=${result.label} session=${result.sessionId}`);
 
 launchTerminalWindows([
   {
     title: 'termhelm-demo-health-monitor',
     cwd: demoRoot,
     command: command('monitor'),
-    env: environment,
+    env: demoEnvironment(),
     exitMessage: '[demo] Health monitor completed.'
   }
 ], { autoClose: true, exitAfterCommand: true });
 
-console.log('[demo-fresh] launched nested supervisor and health monitor terminals');
+console.log('[demo-fresh] launched the health monitor; this npm script can now exit');
 console.log('[demo-fresh] run this command again to test authenticated replacement');

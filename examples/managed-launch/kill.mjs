@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { fileURLToPath } from 'node:url';
 import { killManagedTerminalWindows } from '../../dist/index.js';
+import { demoLabel, demoManagedOptions } from './session.mjs';
 
-const demoRoot = fileURLToPath(new URL('.', import.meta.url));
-const result = await killManagedTerminalWindows('termhelm-realistic-managed-demo', {
-  labelScope: { type: 'project', root: demoRoot },
+const options = demoManagedOptions();
+const result = await killManagedTerminalWindows(demoLabel, {
+  labelScope: options.labelScope,
   timeoutMs: 15_000
 });
 console.log(`[demo-kill] ${result.status}${result.status === 'killed' ? ` session=${result.sessionId}` : ''}`);

@@ -1,4 +1,5 @@
 import type {
+  DetachedManagedTerminalLaunchResult,
   ManagedTerminalCloseResult,
   ManagedTerminalKillOptions,
   ManagedTerminalKillResult,
@@ -10,6 +11,7 @@ import type {
 } from '../src/index.js';
 import {
   killManagedTerminalWindows,
+  launchDetachedManagedTerminalWindows,
   launchManagedTerminalWindows,
   launchTerminalWindows,
   startManagedTerminalWindows
@@ -30,6 +32,8 @@ const ready: Promise<void> = session.ready;
 const closed: Promise<ManagedTerminalCloseResult> = session.closed;
 const closeResult: Promise<ManagedTerminalCloseResult> = session.close();
 const wrapperResult: Promise<void> = launchManagedTerminalWindows([target], options);
+const detachedResult: Promise<DetachedManagedTerminalLaunchResult> =
+  launchDetachedManagedTerminalWindows([target], options);
 const plainSession = launchTerminalWindows([target], plainOptions);
 const plainClosed: Promise<TerminalWindowCloseResult> = plainSession.closed;
 const killOptions: ManagedTerminalKillOptions = { timeoutMs: 5_000 };
@@ -41,6 +45,8 @@ const missingLabel: ManagedTerminalLaunchOptions = {};
 startManagedTerminalWindows([target]);
 // @ts-expect-error Managed calls require the options argument.
 launchManagedTerminalWindows([target]);
+// @ts-expect-error Detached managed calls require the options argument.
+launchDetachedManagedTerminalWindows([target]);
 // @ts-expect-error Unsafe title-based macOS close behavior was removed.
 const unsafeManagedOption: ManagedTerminalLaunchOptions = { label: 'dev', useMacTerminalCustomTitleClose: true };
 // @ts-expect-error Supervisor PIDs are internal diagnostic/controller metadata.
@@ -53,6 +59,7 @@ void ready;
 void closed;
 void closeResult;
 void wrapperResult;
+void detachedResult;
 void plainClosed;
 void killOptions;
 void killResult;

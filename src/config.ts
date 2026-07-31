@@ -193,9 +193,17 @@ export function validateTerminalWindowsConfig(value: unknown, baseDirectory = pr
   if (!isRecord(value)) throw new Error('Config must be an object.');
   if (!Array.isArray(value.targets) || value.targets.length === 0) throw new Error('Config must include a non-empty targets array.');
   if (value.options !== undefined && !isRecord(value.options)) throw new Error('Config options must be an object.');
+  if (value.detached !== undefined && typeof value.detached !== 'boolean') {
+    throw new Error('Config detached must be a boolean.');
+  }
+  const options = value.options === undefined ? undefined : validateConfigOptions(value.options, baseDirectory);
+  if (value.detached === true && options?.label === undefined) {
+    throw new Error('Config detached requires managed options.label.');
+  }
   return {
     targets: value.targets.map((target, index) => validateTerminalTarget(target, `targets[${index}]`)),
-    options: value.options === undefined ? undefined : validateConfigOptions(value.options, baseDirectory)
+    options,
+    detached: value.detached === undefined ? undefined : value.detached
   };
 }
 

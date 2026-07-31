@@ -930,10 +930,21 @@ export function startManagedTerminalWindows(
   return new ManagedTerminalSessionImpl(validatedTargets, validatedOptions);
 }
 
-/** Long-running wrapper used by the CLI and callers that do not need a handle. */
-export async function launchManagedTerminalWindows(
+export interface ManagedTerminalSupervisorReadyResult {
+  readonly sessionId: string;
+  readonly label: string;
+}
+
+export interface ManagedTerminalSupervisorRunnerOptions {
+  /** Best-effort notification. Failure must never stop an already-ready session. */
+  readonly onReady?: (result: ManagedTerminalSupervisorReadyResult) => void | Promise<void>;
+}
+
+/** @internal Shared foreground/detached supervisor lifecycle runner. */
+export async function runManagedTerminalSupervisor(
   targets: TerminalTarget[],
-  options: ManagedTerminalLaunchOptions
+  options: ManagedTerminalLaunchOptions,
+  runnerOptions: ManagedTerminalSupervisorRunnerOptions = {}
 ): Promise<void> {
   const session = startManagedTerminalWindows(targets, options) as ManagedTerminalSessionImpl;
   let signalExitCode: number | undefined;
@@ -949,6 +960,14 @@ export async function launchManagedTerminalWindows(
   for (const [signal, handler] of Object.entries(signalHandlers)) process.once(signal, handler);
   try {
     await session.ready;
+    if (runnerOptions.onReady) {
+      try {
+        await runnerOptions.onReady({ sessionId: session.id, label: session.label });
+      } catch {
+        // Detached launch acceptance transfers lifecycle ownership to this
+        // supervisor. Losing the readiness observer must not stop the session.
+      }
+    }
     await session.closed;
   } catch (error) {
     try {
@@ -962,4 +981,12 @@ export async function launchManagedTerminalWindows(
     for (const [signal, handler] of Object.entries(signalHandlers)) process.removeListener(signal, handler);
     if (signalExitCode !== undefined) process.exitCode = signalExitCode;
   }
+}
+
+/** Long-running wrapper used by the CLI and callers that do not need a handle. */
+export async function launchManagedTerminalWindows(
+  targets: TerminalTarget[],
+  options: ManagedTerminalLaunchOptions
+): Promise<void> {
+  await runManagedTerminalSupervisor(targets, options);
 }
