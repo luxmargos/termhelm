@@ -631,14 +631,25 @@ namespace TerminalWindows
         private static void AttachManagedConsole(uint processId)
         {
             FreeConsole();
-            if (!AttachConsole(processId))
+            // A freshly resumed child needs a brief moment to initialize its
+            // console before AttachConsole can bind to it. Retry for a short
+            // window so fast-starting children (including the self-test
+            // payload) are reliably attachable.
+            int lastError = 0;
+            for (int attempt = 0; attempt < 20; attempt++)
             {
-                ThrowLastError("AttachConsole failed");
+                if (AttachConsole(processId))
+                {
+                    if (!SetConsoleCtrlHandler(IgnoreControlHandler, true))
+                    {
+                        ThrowLastError("SetConsoleCtrlHandler failed");
+                    }
+                    return;
+                }
+                lastError = Marshal.GetLastWin32Error();
+                Thread.Sleep(25);
             }
-            if (!SetConsoleCtrlHandler(IgnoreControlHandler, true))
-            {
-                ThrowLastError("SetConsoleCtrlHandler failed");
-            }
+            throw new Win32Exception(lastError, "AttachConsole failed");
         }
 
         private static void TrySendCtrlBreak()
@@ -850,7 +861,6 @@ namespace TerminalWindows
                     ThrowLastError("Self-test AssignProcessToJobObject failed");
                 }
                 childAssigned = true;
-                AttachManagedConsole(child.dwProcessId);
                 if (ResumeThread(childThread) == UInt32.MaxValue)
                 {
                     ThrowLastError("Self-test ResumeThread failed");
@@ -1057,11 +1067,11 @@ namespace TerminalWindows
                     ThrowLastError("AssignProcessToJobObject failed");
                 }
                 childAssigned = true;
-                AttachManagedConsole(child.dwProcessId);
                 if (ResumeThread(childThread) == UInt32.MaxValue)
                 {
                     ThrowLastError("ResumeThread failed");
                 }
+                AttachManagedConsole(child.dwProcessId);
                 Close(ref childThread);
 
                 if (controllerWatch != null)
@@ -1073,6 +1083,14 @@ namespace TerminalWindows
                     canonicalSessionId,
                     canonicalTargetId,
                     "ready");
+
+                // Detach from the child's console now that ready is signalled.
+                // Staying attached keeps the child's console host (conhost.exe,
+                // a Job Object-group descendant) alive, which would prevent the
+                // job from ever reporting zero active processes and stall the
+                // completion wait below. We re-attach on demand only when a
+                // graceful shutdown is requested while the child is still alive.
+                FreeConsole();
 
                 bool shutdownRequested = false;
                 while (!IsJobEmpty(job))
@@ -1102,7 +1120,22 @@ namespace TerminalWindows
                         canonicalSessionId,
                         canonicalTargetId,
                         "stopping");
-                    TrySendCtrlBreak();
+                    // Re-attach to the child's console to deliver a graceful
+                    // Ctrl+Break. If the child already exited, its console is
+                    // gone and we skip straight to forced termination below.
+                    if (WaitForSingleObject(childProcess, 0) == WAIT_TIMEOUT)
+                    {
+                        try
+                        {
+                            AttachManagedConsole(child.dwProcessId);
+                            TrySendCtrlBreak();
+                            FreeConsole();
+                        }
+                        catch
+                        {
+                            // Child console already torn down; fall through.
+                        }
+                    }
                     if (!WaitForJobEmpty(job, graceMs))
                     {
                         WriteStateMarker(
