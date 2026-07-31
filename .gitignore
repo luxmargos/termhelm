@@ -8,3 +8,5 @@ coverage/
 /demo
 /legacy-code.mjs
 /.plans
+/temp
+/.pi
