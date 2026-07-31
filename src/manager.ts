@@ -1047,6 +1047,50 @@ function releaseLock(lock: { path: string; owner: LockOwnerRecord }): void {
   }
 }
 
+/**
+ * Fail-closed crash-recovery escape hatch. If a label lock exists whose owner
+ * process is no longer alive, remove it so a subsequent `withManagedLabelLocks`
+ * can acquire it. Returns true when a stale lock was reclaimed, false when the
+ * lock is absent or still owned by a live process. Never reclaims a lock from a
+ * live PID: that lock is genuinely in use and must not be disturbed.
+ */
+export function reclaimManagedLabelLockIfDead(
+  identity: ManagedLabelIdentity,
+  options: ManagedManagerStorageOptions = {}
+): boolean {
+  assertIdentity(identity);
+  const path = lockPath(identity, options);
+  if (!existsSync(path)) return false;
+  try {
+    verifyOwnedPath(path, 'directory');
+  } catch {
+    return false;
+  }
+  const ownerPath = lockOwnerPath(path);
+  if (!existsSync(ownerPath)) return false;
+  let owner: LockOwnerRecord;
+  try {
+    owner = parseLockOwner(readSecureJson(ownerPath));
+  } catch {
+    return false;
+  }
+  // process.kill(pid, 0) throws when the pid is not alive. PIDs are not
+  // authority for ownership in the launch path, but for the recovery escape
+  // hatch a dead owner PID is sufficient evidence the lock is abandoned.
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch {
+    // Owner is not alive: reclaim.
+  }
+  try {
+    rmSync(path, { recursive: true, force: true });
+    return !existsSync(path);
+  } catch {
+    return false;
+  }
+}
+
 export async function withManagedLabelLocks<T>(
   identities: readonly ManagedLabelIdentity[],
   timeoutMs: number,

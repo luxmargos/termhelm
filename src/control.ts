@@ -648,6 +648,38 @@ export async function watchManagedSupervisor(input: {
   });
 }
 
+/**
+ * Lightweight liveness probe for a managed supervisor's control endpoint.
+ * Connects without sending anything and resolves `true` when the endpoint
+ * accepts a connection (a live supervisor is listening), or `false` when the
+ * endpoint is gone or does not respond within the timeout. Used by the
+ * fail-closed crash-recovery escape hatch (`termhelm reset`) to decide whether
+ * a stale-looking managed session is truly abandoned.
+ */
+export async function probeManagedControlEndpoint(
+  endpoint: string,
+  timeoutMs: number
+): Promise<boolean> {
+  validateEndpoint(endpoint);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('Managed terminal control probe timeout must be a positive finite number.');
+  }
+  return await new Promise<boolean>(resolve => {
+    let settled = false;
+    const socket = createConnection(endpoint);
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
 export async function requestManagedSessionStop(input: {
   endpoint: string;
   authenticationToken: string;

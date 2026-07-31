@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { validateManagedTerminalLabel, validateManagedTerminalLaunchOptions } from './config.js';
 import type { ManagedTerminalLabelScope, ManagedTerminalLaunchOptions, ResolvedTerminalTarget } from './types.js';
 
-export type CliMode = 'launch' | 'kill';
+export type CliMode = 'launch' | 'kill' | 'reset';
 
 export interface CliRequest {
   mode?: CliMode;
@@ -13,6 +13,7 @@ export interface CliRequest {
   target?: ResolvedTerminalTarget;
   managedOptions?: ManagedTerminalLaunchOptions;
   detached?: boolean;
+  force?: boolean;
 }
 
 export function helpText(): string {
@@ -23,6 +24,7 @@ Usage:
   termhelm launch [--detach] [--label <label>] --title <title> [--cwd <cwd>] --command <command>
   termhelm kill --config <path>
   termhelm kill --label <label> [--label-scope user|project] [--project-root <path>]
+  termhelm reset --label <label> [--label-scope user|project] [--project-root <path>] [--force]
 
 Options:
   --config <path>              Read targets and options from a JSON config file.
@@ -31,16 +33,23 @@ Options:
   --command <command>          Command for a single inline target.
   --env KEY=VALUE              Environment variable for a single inline target. Repeatable.
   --exit-message <text>        Message printed after the command exits.
-  --label <label>              Enable managed launch behavior, or select the session to kill.
+  --label <label>              Enable managed launch behavior, or select the session to kill/reset.
   --label-scope user|project   Scope the managed label. Defaults to user.
-  --project-root <path>        Project root. Defaults to the resolved --cwd for launch, or current directory for kill.
+  --project-root <path>        Project root. Defaults to the resolved --cwd for launch, or current directory for kill/reset.
   --detach                     Return after a managed session is ready and keep its supervisor hidden.
+  --force                      With reset, skip the fail-closed liveness check. Use only when nothing is alive.
   --help                       Show this help text.
 
 A launch with a label is managed; a launch without one is plain. --detach is
 valid only for managed launch. Config files select managed behavior with
 options.label and can set top-level detached. Kill reads the same label and
 scope from the config used to launch the session.
+
+Reset is a fail-closed crash-recovery escape hatch: it removes a stale managed
+session record, its session directory, and lingering launch intents when the
+supervisor is no longer reachable (e.g. its terminal was closed mid-run). It
+refuses while the supervisor's control endpoint is still serving; use --force
+only when you are certain the process tree is dead.
 `;
 }
 
@@ -128,7 +137,7 @@ function inlineManagedOptions(
 export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
   const [mode] = args;
   if (!mode || mode === '--help' || mode === '-h') return { help: true };
-  if (mode !== 'launch' && mode !== 'kill') throw new Error(`Unknown command: ${mode}`);
+  if (mode !== 'launch' && mode !== 'kill' && mode !== 'reset') throw new Error(`Unknown command: ${mode}`);
 
   const parsed = parseArgs({
     args: args.slice(1),
@@ -143,6 +152,7 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
       'label-scope': { type: 'string' },
       'project-root': { type: 'string' },
       detach: { type: 'boolean' },
+      force: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' }
     },
     allowPositionals: false
@@ -161,6 +171,9 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
   const hasIdentityFlags = hasManagedIdentityFlags(values);
 
   if (mode === 'kill' && detached) throw new Error('--detach is valid only for managed launch.');
+  if (values.force === true && mode !== 'reset') {
+    throw new Error('--force is valid only for reset.');
+  }
   if (typeof configPath === 'string' && (hasIdentityFlags || hasInlineTargetFlags)) {
     throw new Error('Use either --config or inline flags, not both; define labels and targets in the config file.');
   }
@@ -175,6 +188,14 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
     const label = validateManagedTerminalLabel(values.label);
     const managedOptions = inlineManagedOptions(values, label);
     return { mode, help: false, managedOptions };
+  }
+
+  if (mode === 'reset') {
+    if (detached) throw new Error('--detach is valid only for managed launch.');
+    if (hasInlineTargetFlags) throw new Error('Reset accepts only managed label identity flags or --config.');
+    const label = validateManagedTerminalLabel(values.label);
+    const managedOptions = inlineManagedOptions(values, label);
+    return { mode, help: false, managedOptions, force: values.force === true };
   }
 
   if (hasInlineTargetFlags) {

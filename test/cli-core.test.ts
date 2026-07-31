@@ -193,6 +193,34 @@ describe('CLI argument parsing', () => {
     ])).toThrow('Kill accepts only managed label identity flags');
   });
 
+  it('parses reset mode by inline label', () => {
+    expect(parseTerminalWindowsCliArgs(['reset', '--label', 'stale']))
+      .toMatchObject({ mode: 'reset', help: false, managedOptions: { label: 'stale', labelScope: { type: 'user' } }, force: false });
+  });
+
+  it('parses reset --force', () => {
+    expect(parseTerminalWindowsCliArgs(['reset', '--label', 'stale', '--force']))
+      .toMatchObject({ mode: 'reset', force: true, managedOptions: { label: 'stale' } });
+  });
+
+  it('rejects --force outside reset mode', () => {
+    expect(() => parseTerminalWindowsCliArgs(['kill', '--label', 'dev', '--force']))
+      .toThrow('--force is valid only for reset');
+    expect(() => parseTerminalWindowsCliArgs(['launch', '--label', 'dev', '--title', 'api', '--command', 'x', '--force']))
+      .toThrow('--force is valid only for reset');
+  });
+
+  it('rejects --detach and target flags in reset mode', () => {
+    expect(() => parseTerminalWindowsCliArgs(['reset', '--detach', '--label', 'stale']))
+      .toThrow('--detach is valid only for managed launch');
+    expect(() => parseTerminalWindowsCliArgs(['reset', '--label', 'stale', '--title', 'api']))
+      .toThrow('Reset accepts only managed label identity flags');
+  });
+
+  it('requires a label for inline reset mode', () => {
+    expect(() => parseTerminalWindowsCliArgs(['reset'])).toThrow(MANAGED_TERMINAL_LABEL_ERROR);
+  });
+
   it('requires a label for inline kill mode', () => {
     expect(() => parseTerminalWindowsCliArgs(['kill'])).toThrow(MANAGED_TERMINAL_LABEL_ERROR);
   });
@@ -210,6 +238,9 @@ describe('CLI argument parsing', () => {
     expect(helpText()).toContain('termhelm launch [--detach] [--label <label>]');
     expect(helpText()).toContain('--detach');
     expect(helpText()).toContain('termhelm kill --label <label>');
+    expect(helpText()).toContain('termhelm reset --label <label>');
+    expect(helpText()).toContain('--force');
+    expect(helpText()).toContain('crash-recovery escape hatch');
     expect(helpText()).toContain('A launch with a label is managed');
     expect(helpText()).toContain('Defaults to the current working directory');
     expect(helpText()).toContain('Defaults to the resolved --cwd');

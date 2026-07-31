@@ -8,7 +8,8 @@ import {
   launchDetachedManagedTerminalWindows,
   launchManagedTerminalWindows,
   launchTerminalWindows,
-  readTerminalWindowsConfig
+  readTerminalWindowsConfig,
+  resetManagedTerminalWindows
 } from './index.js';
 import {
   DEFAULT_MANAGED_CLOSE_WAIT_TIMEOUT_MS,
@@ -49,6 +50,30 @@ async function executeTerminalWindowsCli(args: string[], output: CliOutput): Pro
       output.log(`Killed managed terminal session ${JSON.stringify(result.label)}.`);
       return;
     }
+    if (request.mode === 'reset') {
+      const options = validateManagedTerminalLaunchOptions(
+        readTerminalWindowsConfigOptions(request.configPath)
+      );
+      const timeoutMs = options.replaceTimeoutMs
+        ?? (options.shutdownDelayMs ?? DEFAULT_MANAGED_SHUTDOWN_DELAY_MS)
+          + (options.closeWaitTimeoutMs ?? DEFAULT_MANAGED_CLOSE_WAIT_TIMEOUT_MS)
+          + DEFAULT_MANAGED_REPLACE_EXTRA_TIMEOUT_MS;
+      const result = await resetManagedTerminalWindows(options.label, {
+        labelScope: options.labelScope,
+        timeoutMs,
+        force: request.force === true
+      });
+      if (result.status === 'not-found') {
+        throw new Error(`No managed terminal session was found for label ${JSON.stringify(result.label)}.`);
+      }
+      if (result.status === 'busy') {
+        throw new Error(
+          `Managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}) is still running. Use 'termhelm kill' to stop it instead of reset.`
+        );
+      }
+      output.log(`Reset stale managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}).`);
+      return;
+    }
     const config = readTerminalWindowsConfig(request.configPath);
     const detached = request.detached === true || config.detached === true;
     if (config.options?.label !== undefined) {
@@ -78,6 +103,25 @@ async function executeTerminalWindowsCli(args: string[], output: CliOutput): Pro
       throw new Error(`No managed terminal session was found for label ${JSON.stringify(result.label)}.`);
     }
     output.log(`Killed managed terminal session ${JSON.stringify(result.label)}.`);
+    return;
+  }
+
+  if (request.mode === 'reset') {
+    const options = validateManagedTerminalLaunchOptions(request.managedOptions);
+    const result = await resetManagedTerminalWindows(options.label, {
+      labelScope: options.labelScope,
+      timeoutMs: options.replaceTimeoutMs,
+      force: request.force === true
+    });
+    if (result.status === 'not-found') {
+      throw new Error(`No managed terminal session was found for label ${JSON.stringify(result.label)}.`);
+    }
+    if (result.status === 'busy') {
+      throw new Error(
+        `Managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}) is still running. Use 'termhelm kill' to stop it instead of reset.`
+      );
+    }
+    output.log(`Reset stale managed terminal session ${JSON.stringify(result.label)} (${result.sessionId}).`);
     return;
   }
 

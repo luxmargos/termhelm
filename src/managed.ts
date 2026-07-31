@@ -8,6 +8,7 @@ import {
 } from './config.js';
 import {
   openManagedControlServer,
+  probeManagedControlEndpoint,
   requestManagedSessionStop,
   type ManagedControlServer
 } from './control.js';
@@ -19,8 +20,10 @@ import {
   ensureManagedTerminalRuntimeDirectory,
   inspectLegacySupervisorRecord,
   managedTargetMarkerPath,
+  readManagedLaunchIntents,
   readManagedSessionRecord,
   readManagedTargetMarker,
+  reclaimManagedLabelLockIfDead,
   removeInactiveLegacySupervisorRecord,
   removeManagedLaunchIntent,
   removeManagedSessionDirectory,
@@ -60,6 +63,8 @@ import type {
   ManagedTerminalKillOptions,
   ManagedTerminalKillResult,
   ManagedTerminalLaunchOptions,
+  ManagedTerminalResetOptions,
+  ManagedTerminalResetResult,
   ManagedTerminalSession,
   ResolvedTerminalTarget,
   TerminalTarget,
@@ -355,6 +360,87 @@ export async function killManagedTerminalWindows(
     return record === null
       ? { status: 'not-found', label: identity.label }
       : { status: 'killed', label: identity.label, sessionId: record.sessionId };
+  });
+}
+
+/**
+ * Fail-closed crash-recovery escape hatch. Removes a stale managed session
+ * record, its session directory, and any lingering launch intents for a label
+ * when the supervisor is no longer reachable. Unlike `kill`, this never
+ * attempts an authenticated stop over the control pipe: it is meant for the
+ * case where the supervisor already died (e.g. its terminal window was closed
+ * mid-run) and left a record with no termination markers, which would
+ * otherwise block every future launch for that label.
+ *
+ * Safety: refuses to proceed while the supervisor's control endpoint accepts
+ * connections (a live supervisor should be stopped with `kill` instead). When
+ * the control endpoint is gone but the recorded diagnostic PID is still alive,
+ * it also refuses unless `force` is set — that combination is suspicious and
+ * the operator must explicitly assert nothing is alive.
+ */
+export async function resetManagedTerminalWindows(
+  label: string,
+  options: ManagedTerminalResetOptions = {}
+): Promise<ManagedTerminalResetResult> {
+  const normalizedLabel = validateManagedTerminalLabel(label);
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new Error('Managed terminal reset options must be an object.');
+  }
+  const timeoutMs = options.timeoutMs
+    ?? DEFAULT_MANAGED_SHUTDOWN_DELAY_MS
+      + DEFAULT_MANAGED_CLOSE_WAIT_TIMEOUT_MS
+      + DEFAULT_MANAGED_REPLACE_EXTRA_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff) {
+    throw new Error('Managed terminal reset options.timeoutMs must be an integer from 0 through 2147483647.');
+  }
+  const force = options.force === true;
+
+  const validatedOptions = validateManagedTerminalLaunchOptions({
+    label: normalizedLabel,
+    labelScope: options.labelScope
+  });
+  const identity = resolveManagedLabelIdentity(validatedOptions.label, validatedOptions.labelScope);
+
+  // Read the record before taking the lock, just to short-circuit not-found.
+  const existing = readManagedSessionRecord(identity);
+  if (existing === null) return { status: 'not-found', label: identity.label };
+
+  // Fail-closed liveness check: if the supervisor is still serving its control
+  // endpoint, the operator should use `kill`, not `reset`.
+  const probeTimeoutMs = Math.min(1_000, Math.max(100, Math.floor(timeoutMs / 4)));
+  const endpointAlive = await probeManagedControlEndpoint(existing.controlEndpoint, probeTimeoutMs);
+  if (endpointAlive) {
+    return { status: 'busy', label: identity.label, sessionId: existing.sessionId };
+  }
+  if (!force && typeof existing.diagnosticPid === 'number' && existing.diagnosticPid > 0) {
+    let supervisorAlive = false;
+    try { process.kill(existing.diagnosticPid, 0); supervisorAlive = true; } catch { supervisorAlive = false; }
+    if (supervisorAlive) {
+      throw new Error(
+        `Managed terminal supervisor for label ${JSON.stringify(identity.label)} is still alive but its control endpoint is gone. ` +
+        'Use `termhelm kill` to stop it, or rerun `termhelm reset --force` only if you are certain the process tree is dead.'
+      );
+    }
+  }
+
+  // Reclaim a stale lock from a dead owner so the label lock can be acquired.
+  // withManagedLabelLocks itself never reclaims (by design); reset is the one
+  // authorized escape hatch that does, and only when the owner PID is dead.
+  reclaimManagedLabelLockIfDead(identity);
+
+  return await withManagedLabelLocks([identity], timeoutMs, async () => {
+    // Re-read under the lock; another reset/launch may have changed it.
+    const record = readManagedSessionRecord(identity);
+    if (record === null) return { status: 'not-found', label: identity.label };
+
+    // Remove every lingering launch intent for this label (crashed launches can
+    // leave contenders behind).
+    for (const intent of readManagedLaunchIntents(identity)) {
+      removeManagedLaunchIntent(identity, intent);
+    }
+    removeManagedSessionDirectory(record.sessionId);
+    removeManagedSessionRecordIfOwned(identity, record.sessionId);
+    return { status: 'reset', label: identity.label, sessionId: record.sessionId };
   });
 }
 

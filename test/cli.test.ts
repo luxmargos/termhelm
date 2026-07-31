@@ -7,7 +7,8 @@ const api = vi.hoisted(() => ({
   killManagedTerminalWindows: vi.fn(),
   launchDetachedManagedTerminalWindows: vi.fn(),
   launchManagedTerminalWindows: vi.fn(),
-  launchTerminalWindows: vi.fn()
+  launchTerminalWindows: vi.fn(),
+  resetManagedTerminalWindows: vi.fn()
 }));
 
 vi.mock('../src/index.js', async importOriginal => ({
@@ -30,6 +31,11 @@ beforeEach(() => {
   api.launchDetachedManagedTerminalWindows.mockResolvedValue({
     label: 'dev',
     sessionId: '00000000-0000-4000-8000-000000000002'
+  });
+  api.resetManagedTerminalWindows.mockResolvedValue({
+    status: 'reset',
+    label: 'dev',
+    sessionId: '00000000-0000-4000-8000-000000000003'
   });
 });
 
@@ -183,6 +189,75 @@ describe('CLI entry point', () => {
     expect(status).toBe(1);
     expect(process.exitCode).toBe(1);
     expect(messages.stdout).toEqual([]);
+    expect(messages.stderr).toEqual([
+      'termhelm: No managed terminal session was found for label "missing".'
+    ]);
+  });
+
+  it('resets a stale session by an inline label', async () => {
+    const messages = output();
+    await expect(runTerminalWindowsCli(['reset', '--label', 'dev'], messages.sink)).resolves.toBe(0);
+
+    expect(api.resetManagedTerminalWindows).toHaveBeenCalledWith('dev', {
+      labelScope: { type: 'user' },
+      timeoutMs: undefined,
+      force: false
+    });
+    expect(messages.stdout).toEqual(['Reset stale managed terminal session "dev" (00000000-0000-4000-8000-000000000003).']);
+    expect(messages.stderr).toEqual([]);
+  });
+
+  it('passes --force through to reset', async () => {
+    const messages = output();
+    await expect(runTerminalWindowsCli(['reset', '--label', 'dev', '--force'], messages.sink)).resolves.toBe(0);
+
+    expect(api.resetManagedTerminalWindows).toHaveBeenCalledWith('dev', {
+      labelScope: { type: 'user' },
+      timeoutMs: undefined,
+      force: true
+    });
+  });
+
+  it('uses config identity and derived shutdown timing for reset without validating targets', async () => {
+    const messages = output();
+    const path = configFile({
+      label: 'dev',
+      labelScope: { type: 'project', root: '.' },
+      shutdownDelayMs: 20_000,
+      closeWaitTimeoutMs: 20_000
+    }, [{ title: 'api', cwd: './missing-target-directory', command: 'pnpm dev' }]);
+
+    await expect(runTerminalWindowsCli(['reset', '--config', path], messages.sink)).resolves.toBe(0);
+    expect(api.resetManagedTerminalWindows).toHaveBeenCalledWith('dev', {
+      labelScope: { type: 'project', root: expect.any(String) },
+      timeoutMs: 43_000,
+      force: false
+    });
+  });
+
+  it('refuses to reset a session that is still running', async () => {
+    api.resetManagedTerminalWindows.mockResolvedValueOnce({
+      status: 'busy',
+      label: 'dev',
+      sessionId: '00000000-0000-4000-8000-000000000004'
+    });
+    const messages = output();
+    const status = await runTerminalWindowsCli(['reset', '--label', 'dev'], messages.sink);
+
+    expect(status).toBe(1);
+    expect(process.exitCode).toBe(1);
+    expect(messages.stderr).toEqual([
+      'termhelm: Managed terminal session "dev" (00000000-0000-4000-8000-000000000004) is still running. Use \'termhelm kill\' to stop it instead of reset.'
+    ]);
+  });
+
+  it('reports a missing reset label as a CLI error', async () => {
+    api.resetManagedTerminalWindows.mockResolvedValueOnce({ status: 'not-found', label: 'missing' });
+    const messages = output();
+    const status = await runTerminalWindowsCli(['reset', '--label', 'missing'], messages.sink);
+
+    expect(status).toBe(1);
+    expect(process.exitCode).toBe(1);
     expect(messages.stderr).toEqual([
       'termhelm: No managed terminal session was found for label "missing".'
     ]);

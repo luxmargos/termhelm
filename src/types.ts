@@ -118,6 +118,20 @@ export type ManagedTerminalKillResult =
   | { readonly status: 'killed'; readonly label: string; readonly sessionId: string }
   | { readonly status: 'not-found'; readonly label: string };
 
+export interface ManagedTerminalResetOptions {
+  /** User-global by default, or explicitly scoped to a canonical project root. */
+  labelScope?: ManagedTerminalLabelScope;
+  /** Bounded wait for the label lock and the control-endpoint liveness probe. */
+  timeoutMs?: number;
+  /** Skip the fail-closed liveness check. The operator asserts nothing is alive. */
+  force?: boolean;
+}
+
+export type ManagedTerminalResetResult =
+  | { readonly status: 'reset'; readonly label: string; readonly sessionId: string }
+  | { readonly status: 'not-found'; readonly label: string }
+  | { readonly status: 'busy'; readonly label: string; readonly sessionId: string };
+
 export interface TerminalWindowCloseResult {
   readonly uiCloseResults: readonly TerminalUiCloseResult[];
   readonly warnings: readonly string[];

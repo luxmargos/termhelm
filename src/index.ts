@@ -2,6 +2,7 @@ import { validateTerminalTarget } from './config.js';
 import {
   killManagedTerminalWindows,
   launchManagedTerminalWindows,
+  resetManagedTerminalWindows,
   startManagedTerminalWindows
 } from './managed.js';
 import {
@@ -39,6 +40,8 @@ export type {
   ManagedTerminalKillResult,
   ManagedTerminalLabelScope,
   ManagedTerminalLaunchOptions,
+  ManagedTerminalResetOptions,
+  ManagedTerminalResetResult,
   ManagedTerminalSession,
   TerminalLaunchCommand,
   TerminalLaunchOptions,
@@ -70,6 +73,7 @@ export {
 export {
   killManagedTerminalWindows,
   launchManagedTerminalWindows,
+  resetManagedTerminalWindows,
   startManagedTerminalWindows
 } from './managed.js';
 export { launchDetachedManagedTerminalWindows } from './detached.js';
