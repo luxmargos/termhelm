@@ -489,6 +489,7 @@ through `PATH` for non-FHS systems.
 | Check | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Controller self-test (`-SelfTest`) | N/A | ✅ pwsh 7.6 + powershell.exe 5.1 both exit 0 | N/A |
+| `demo:managed:fresh` (end-to-end with visible terminal windows) | ✅ Terminal.app | ✅ pwsh 7 (default) + powershell.exe 5.1 (forced) both produce 4 daemon windows + health monitor; detached supervisor survives launcher exit; health endpoints respond | ✅ xterm/GNOME Terminal/Konsole |
 | `npx tsc -p tsconfig.json` (build) | ✅ | ✅ | ✅ |
 | `npx vitest run test/platform-controller.test.ts` | ✅ | ✅ | ✅ |
 | `npx vitest run test/managed.test.ts` | ✅ | ✅ | ✅ |
