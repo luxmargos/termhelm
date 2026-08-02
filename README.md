@@ -488,7 +488,7 @@ through `PATH` for non-FHS systems.
 
 | Check | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| `pwsh -File native/windows/termhelm-controller.ps1 -SelfTest` (controller self-test) | N/A | ✅ Exit 0 | N/A |
+| Controller self-test (`-SelfTest`) | N/A | ✅ pwsh 7.6 + powershell.exe 5.1 both exit 0 | N/A |
 | `npx tsc -p tsconfig.json` (build) | ✅ | ✅ | ✅ |
 | `npx vitest run test/platform-controller.test.ts` | ✅ | ✅ | ✅ |
 | `npx vitest run test/managed.test.ts` | ✅ | ✅ | ✅ |
