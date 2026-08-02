@@ -55,6 +55,10 @@ export function demoManagedOptions() {
     labelScope: { type: 'project', root: demoRoot },
     autoClose: true,
     shutdownDelayMs: 2_000,
-    closeWaitTimeoutMs: 6_000
+    closeWaitTimeoutMs: 6_000,
+    // Give the replacement enough time to stop the predecessor's process
+    // tree and launch new controllers on Windows where cold PowerShell
+    // Add-Type compiles are slow.
+    replaceTimeoutMs: 30_000
   };
 }

@@ -611,6 +611,14 @@ class ManagedTerminalSessionImpl implements ManagedTerminalSession {
           if (remainingTime(deadline) === 0) {
             throw new Error('Managed terminal replacement deadline expired before launch.');
           }
+          // Give the OS a brief moment to release TCP ports and other
+          // resources held by the predecessor's process tree before launching
+          // replacements. Without this, new daemons can fail to bind to ports
+          // that the old daemons just released, causing them to crash
+          // immediately and the terminal windows to close.
+          if (this.replacementIdentities.length > 0) {
+            await delay(Math.min(500, remainingTime(deadline)));
+          }
           this.assertLatestLaunchIntents();
 
           writeFileSync(this.supervisorToken, `${this.id}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });

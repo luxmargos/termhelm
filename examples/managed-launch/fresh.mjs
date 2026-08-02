@@ -31,7 +31,7 @@ launchTerminalWindows([
     env: demoEnvironment(),
     exitMessage: '[demo] Health monitor completed.'
   }
-], { autoClose: true, exitAfterCommand: true });
+], { autoClose: true, exitAfterCommand: false });
 
 console.log('[demo-fresh] launched the health monitor; this npm script can now exit');
 console.log('[demo-fresh] run this command again to test authenticated replacement');
