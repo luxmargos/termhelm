@@ -401,7 +401,6 @@ export function launchWindowsTerminalController(
         detached: false,
         stdio: 'ignore',
         windowsHide: true,
-        // Parse/delete the payload and compile in the package environment.
         // Target variables are applied only after Add-Type succeeds and just
         // before the owned child is created.
         env: windowsControllerEnvironment()

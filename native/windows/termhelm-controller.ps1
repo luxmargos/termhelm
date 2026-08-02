@@ -102,6 +102,7 @@ namespace TerminalWindows
         private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const uint STARTF_USESHOWWINDOW = 0x00000001;
         private const short SW_HIDE = 0;
+        private const short SW_SHOWNORMAL = 1;
         private const uint SYNCHRONIZE = 0x00100000;
         private const uint WAIT_OBJECT_0 = 0x00000000;
         private const uint WAIT_TIMEOUT = 0x00000102;
@@ -272,6 +273,17 @@ namespace TerminalWindows
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool FreeConsole();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AllocConsole();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -1030,11 +1042,25 @@ namespace TerminalWindows
                 STARTUPINFO startup = new STARTUPINFO();
                 startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
                 startup.lpTitle = title;
+                startup.dwFlags = STARTF_USESHOWWINDOW;
+                startup.wShowWindow = SW_SHOWNORMAL;
                 PROCESS_INFORMATION child;
                 StringBuilder commandLine = new StringBuilder(
                     QuoteCreateProcessArgument(comspec) +
                     " /d /q /v:off /c " +
                     "\"%TERMHELM_COMMAND_FILE%\"");
+                // Detach from any inherited ConPTY pseudo-console, then allocate
+                // a real Win32 console. On Windows 11, CREATE_NEW_CONSOLE
+                // from a ConPTY-attached process creates an invisible
+                // pseudo-console. FreeConsole+AllocConsole gives us a real
+                // conhost-backed console so the child's CREATE_NEW_CONSOLE
+                // gets a properly visible window.
+                FreeConsole();
+                AllocConsole();
+                // NOTE: do NOT hide the controller's own console here.
+                // Hiding it also makes the child's CREATE_NEW_CONSOLE
+                // window invisible on Windows 11. Instead, the window
+                // is hidden after the child is created.
                 uint flags =
                     CREATE_SUSPENDED |
                     CREATE_NEW_CONSOLE |
