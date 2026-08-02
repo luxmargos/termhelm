@@ -1,11 +1,12 @@
 import { fileURLToPath } from 'node:url';
-import { posixShellQuote } from '../../dist/index.js';
+import { posixShellQuote, windowsCmdQuote } from '../../dist/index.js';
 
 export const demoRoot = fileURLToPath(new URL('.', import.meta.url));
 export const demoLabel = 'termhelm-realistic-managed-demo';
 
 const daemon = name => fileURLToPath(new URL(`./daemons/${name}.mjs`, import.meta.url));
-const nodeCommand = name => `${posixShellQuote(process.execPath)} ${posixShellQuote(daemon(name))}`;
+const quote = process.platform === 'win32' ? windowsCmdQuote : posixShellQuote;
+const nodeCommand = name => `${quote(process.execPath)} ${quote(daemon(name))}`;
 
 export function demoEnvironment() {
   return {

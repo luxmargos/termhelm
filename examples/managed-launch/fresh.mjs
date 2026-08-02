@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import {
   launchDetachedManagedTerminalWindows,
   launchTerminalWindows,
-  posixShellQuote
+  posixShellQuote,
+  windowsCmdQuote
 } from '../../dist/index.js';
 import {
   demoEnvironment,
@@ -12,7 +13,8 @@ import {
   demoTargets
 } from './session.mjs';
 
-const command = name => `${posixShellQuote(process.execPath)} ${posixShellQuote(fileURLToPath(new URL(`./${name}.mjs`, import.meta.url)))}`;
+const quote = process.platform === 'win32' ? windowsCmdQuote : posixShellQuote;
+const command = name => `${quote(process.execPath)} ${quote(fileURLToPath(new URL(`./${name}.mjs`, import.meta.url)))}`;
 
 console.log('[demo-fresh] replacing the managed session in a hidden detached supervisor');
 const result = await launchDetachedManagedTerminalWindows(
