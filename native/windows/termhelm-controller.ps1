@@ -1099,6 +1099,14 @@ namespace TerminalWindows
                 // shutdown, so AttachManagedConsole is deferred to that path.
                 Close(ref childThread);
 
+                // Now that the child's visible console window exists, hide
+                // our own allocated console.
+                IntPtr ownConsole = GetConsoleWindow();
+                if (ownConsole != IntPtr.Zero)
+                {
+                    ShowWindow(ownConsole, SW_HIDE);
+                }
+
                 if (controllerWatch != null)
                 {
                     controllerWatch.SendState("ready");
