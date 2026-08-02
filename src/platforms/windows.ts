@@ -269,7 +269,6 @@ function createWindowsCommandFile(
   const commandFile = join(control.directory, `${control.id}.cmd`);
   const lines = [
     '@echo off',
-    'chcp 65001 >nul',
     target.command,
     'set "TERMHELM_EXIT_CODE=%ERRORLEVEL%"',
     'if defined TERMHELM_EXIT_MESSAGE_FILE (',

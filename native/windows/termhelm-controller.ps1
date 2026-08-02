@@ -409,18 +409,13 @@ namespace TerminalWindows
 
             public bool IsDisconnected()
             {
-                if (stream == null || !stream.IsConnected)
-                {
-                    return true;
-                }
-                uint available;
-                return !PeekNamedPipe(
-                    stream.SafePipeHandle.DangerousGetHandle(),
-                    IntPtr.Zero,
-                    0,
-                    IntPtr.Zero,
-                    out available,
-                    IntPtr.Zero);
+                // NamedPipeClientStream.IsConnected is the reliable managed
+                // connection state here. Do not use PeekNamedPipe as a health
+                // probe: on Windows asynchronous named-pipe handles can make
+                // PeekNamedPipe report failure even while the authenticated
+                // watch connection is valid, which incorrectly triggered
+                // shutdown immediately after ready was acknowledged.
+                return stream == null || !stream.IsConnected;
             }
 
             public void SendState(string state)
@@ -1071,7 +1066,11 @@ namespace TerminalWindows
                 {
                     ThrowLastError("ResumeThread failed");
                 }
-                AttachManagedConsole(child.dwProcessId);
+                // Do NOT attach to the child's console here. Attaching and then
+                // detaching (FreeConsole) disrupts the child's console session
+                // and can cause the child process tree to exit prematurely.
+                // The console is only needed for a graceful Ctrl+Break during
+                // shutdown, so AttachManagedConsole is deferred to that path.
                 Close(ref childThread);
 
                 if (controllerWatch != null)
@@ -1083,14 +1082,6 @@ namespace TerminalWindows
                     canonicalSessionId,
                     canonicalTargetId,
                     "ready");
-
-                // Detach from the child's console now that ready is signalled.
-                // Staying attached keeps the child's console host (conhost.exe,
-                // a Job Object-group descendant) alive, which would prevent the
-                // job from ever reporting zero active processes and stall the
-                // completion wait below. We re-attach on demand only when a
-                // graceful shutdown is requested while the child is still alive.
-                FreeConsole();
 
                 bool shutdownRequested = false;
                 while (!IsJobEmpty(job))

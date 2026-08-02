@@ -402,7 +402,6 @@ describe('platform identity safety', () => {
       'writeTerminalStateMarker'
     );
     expect(windowsSource).toContain('controller?.requestClose()');
-    expect(windowsSource).toContain(`'chcp 65001 >nul'`);
     expect(windowsSource).toContain(`'  type "%TERMHELM_EXIT_MESSAGE_FILE%"'`);
     expect(windowsSource).toContain('createWindowsExitMessageFile(target.exitMessage, control)');
     expect(windowsSource).not.toContain('windowsEchoEscape(target.exitMessage)');
