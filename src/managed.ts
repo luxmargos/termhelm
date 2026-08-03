@@ -234,6 +234,77 @@ async function waitForSessionTermination(
   }
 }
 
+const ABANDONED_PREDECESSOR_PROBE_TIMEOUT_MS = 1_000;
+
+/**
+ * Determines whether a predecessor managed session is provably abandoned: its
+ * control endpoint no longer accepts connections (no supervisor is serving it)
+ * and its recorded diagnostic supervisor PID is dead. This is the same
+ * fail-closed precondition `termhelm reset` uses, applied to the replacement
+ * path so a launch or kill can recover a session whose supervisor died without
+ * leaving termination markers.
+ *
+ * On macOS, closing the terminal window delivers SIGHUP and the supervisor
+ * shuts down gracefully, so a record rarely survives. On Windows, closing the
+ * console window raises CTRL_CLOSE_EVENT, which Node.js does not deliver as a
+ * catchable signal, and a force-kill (TerminateProcess) fires no handlers at
+ * all on any platform. In both abrupt-death cases the registry record can be
+ * left behind with no `stopped`/`failed` markers. Rather than refuse every
+ * future launch for that label, the replacement confirms the predecessor is
+ * provably gone before reclaiming its state.
+ *
+ * Returns `false` while the supervisor might still be alive (endpoint alive, or
+ * PID alive) so the caller keeps the fail-closed refusal for live-but-
+ * unreachable supervisors. PID liveness is a recovery heuristic, not an
+ * ownership authority; PID reuse is the same accepted risk as `reset`.
+ */
+async function predecessorSessionIsAbandoned(record: ManagedSessionRecordV2): Promise<boolean> {
+  // A live supervisor serving its control endpoint is not abandoned.
+  if (await probeManagedControlEndpoint(record.controlEndpoint, ABANDONED_PREDECESSOR_PROBE_TIMEOUT_MS)) {
+    return false;
+  }
+  // An unreachable endpoint with a live supervisor PID is suspicious (the
+  // supervisor may be shutting down or the endpoint may be temporarily gone);
+  // stay fail-closed and let the caller refuse.
+  if (typeof record.diagnosticPid === 'number' && record.diagnosticPid > 0) {
+    try {
+      process.kill(record.diagnosticPid, 0);
+      return false;
+    } catch {
+      // Supervisor PID is dead: provably abandoned.
+    }
+  }
+  return true;
+}
+
+/**
+ * Removes a provably-abandoned session's registry record and session
+ * directory. The caller must already hold the label lock (it is invoked from
+ * inside the replacement/kill `withManagedLabelLocks` callback), so this mirrors
+ * only the post-lock cleanup that `termhelm reset` performs. Launch intents are
+ * intentionally left untouched: the replacement path has already registered its
+ * own intent and removed superseded predecessor intents via
+ * `removeSupersededManagedLaunchIntents`, so removing intents here would drop
+ * the replacement's own authoritative intent. Re-reads the record under that
+ * lock and refuses if ownership changed, so a concurrent reset/launch cannot
+ * collide.
+ */
+function reclaimAbandonedSessionState(identity: ManagedLabelIdentity, record: ManagedSessionRecordV2): void {
+  const currentRecord = readManagedSessionRecord(identity);
+  if (currentRecord === null) return;
+  if (!recordsMatch(currentRecord, record)) {
+    throw new Error(
+      `Managed terminal registry ownership changed unexpectedly for label ${JSON.stringify(identity.label)}.`
+    );
+  }
+  removeManagedSessionDirectory(record.sessionId);
+  if (!removeManagedSessionRecordIfOwned(identity, record.sessionId)) {
+    throw new Error(
+      `Could not remove the abandoned managed terminal record for label ${JSON.stringify(identity.label)} safely.`
+    );
+  }
+}
+
 async function stopExistingSession(
   identity: ManagedLabelIdentity,
   deadline: number,
@@ -282,11 +353,31 @@ async function stopExistingSession(
       timeoutMs: recoveryAlreadyConfirmed ? Math.min(1_000, remaining) : remaining
     });
   } catch (error) {
+    // If the predecessor's control endpoint is unreachable, decide quickly
+    // whether the session is provably abandoned. A dead supervisor (endpoint
+    // gone + diagnostic PID dead) left the record behind without termination
+    // markers when it died abruptly — e.g. its Windows console was closed
+    // (CTRL_CLOSE_EVENT is not a catchable Node signal), the process tree was
+    // force-killed, or the host rebooted. Reclaim immediately so the
+    // replacement keeps its full deadline for launching, instead of waiting
+    // the whole deadline for markers a dead supervisor can never publish. This
+    // is the same fail-closed precondition `termhelm reset` uses; PID liveness
+    // is a recovery heuristic with the same accepted PID-reuse risk as reset.
+    if (await predecessorSessionIsAbandoned(record)) {
+      reclaimAbandonedSessionState(identity, record);
+      return record;
+    }
+    // The supervisor may still be alive (endpoint alive, or PID alive but the
+    // endpoint is temporarily gone). Wait for authoritative termination
+    // markers from its controllers, and keep the fail-closed refusal if they
+    // never arrive — never launch over a predecessor that might still run.
     const confirmed = await waitForSessionTermination(identity, record, deadline);
     if (!confirmed) {
       throw new Error(
         `Could not authenticate and confirm shutdown of the managed process tree for label ` +
-        `${JSON.stringify(identity.label)}. Refusing to ${action}. ${errorMessage(error)}`,
+        `${JSON.stringify(identity.label)}. Refusing to ${action}. ${errorMessage(error)}` +
+        ` The predecessor supervisor may still be running; use 'termhelm kill --label ${identity.label}'` +
+        ` to stop it, or 'termhelm reset --label ${identity.label} --force' only if you are certain it is dead.`,
         { cause: error }
       );
     }

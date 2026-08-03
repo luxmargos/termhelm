@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -134,11 +135,14 @@ import {
 } from '../src/managed.js';
 import { TerminalControllerLaunchError, type TerminalProcessController } from '../src/platforms/controller.js';
 import {
+  createManagedSessionRecord,
   readManagedLaunchIntents,
+  readManagedSessionRecord,
   removeManagedSessionRecordIfOwned,
   resolveManagedLabelIdentity,
   managedTerminalRuntimeDirectory,
-  withManagedLabelLocks
+  withManagedLabelLocks,
+  writeManagedSessionRecord
 } from '../src/manager.js';
 
 const target = (title: string) => ({ title, cwd: process.cwd(), command: 'fake command' });
@@ -580,5 +584,74 @@ describe('managed lifecycle state machine', () => {
 
     predecessor.onRequestClose = undefined;
     await first.close();
+  });
+
+  it('auto-recovers a stale predecessor whose supervisor is provably dead instead of refusing', async () => {
+    fakePlatform.reset();
+    const label = `abandoned-${randomUUID()}`;
+    const identity = resolveManagedLabelIdentity(label);
+
+    // Simulate a supervisor that died abruptly (e.g. its Windows console was
+    // closed or the process tree was force-killed) and left a registry record
+    // with no termination markers: a dead diagnostic PID and a control
+    // endpoint nothing is listening on.
+    const deadSupervisor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    await new Promise<void>(resolve => deadSupervisor.once('exit', () => resolve()));
+    expect(deadSupervisor.pid).toBeTypeOf('number');
+    const stale = createManagedSessionRecord({
+      identity,
+      targetIds: [randomUUID()],
+      diagnosticPid: deadSupervisor.pid
+    });
+    writeManagedSessionRecord(identity, stale);
+    expect(readManagedSessionRecord(identity)?.sessionId).toBe(stale.sessionId);
+
+    const replacement = startManagedTerminalWindows([target('recovered')], {
+      label,
+      shutdownDelayMs: 0,
+      closeWaitTimeoutMs: 75,
+      replaceTimeoutMs: 400
+    });
+    await replacement.ready;
+
+    // The stale record was reclaimed and the replacement owns the label now.
+    expect(readManagedSessionRecord(identity)?.sessionId).toBe(replacement.id);
+    expect(fakePlatform.launch).toHaveBeenCalledTimes(1);
+    expect(fakePlatform.controllers.filter(controller => controller.active)).toHaveLength(1);
+    expect(fakePlatform.controllers.find(controller => controller.active)?.sessionId).toBe(replacement.id);
+
+    await replacement.close();
+  });
+
+  it('still refuses a predecessor whose supervisor PID is alive but its endpoint is gone', async () => {
+    fakePlatform.reset();
+    const label = `live-supervisor-${randomUUID()}`;
+    const identity = resolveManagedLabelIdentity(label);
+
+    // A record whose control endpoint is gone but whose supervisor PID (this
+    // process) is still alive. This is the suspicious case the fail-closed
+    // guarantee protects: the supervisor might be shutting down or temporarily
+    // unreachable rather than dead, so auto-recovery must NOT reclaim it.
+    const stale = createManagedSessionRecord({
+      identity,
+      targetIds: [randomUUID()],
+      diagnosticPid: process.pid
+    });
+    writeManagedSessionRecord(identity, stale);
+
+    const replacement = startManagedTerminalWindows([target('refused')], {
+      label,
+      shutdownDelayMs: 0,
+      closeWaitTimeoutMs: 75,
+      replaceTimeoutMs: 400
+    });
+    await expect(replacement.ready).rejects.toThrow(/Could not authenticate|Refusing/i);
+    await expect(replacement.closed).resolves.toMatchObject({ reason: 'launch-failed' });
+
+    // The stale record is retained and nothing was launched over a maybe-live supervisor.
+    expect(readManagedSessionRecord(identity)?.sessionId).toBe(stale.sessionId);
+    expect(fakePlatform.launch).not.toHaveBeenCalled();
+
+    removeManagedSessionRecordIfOwned(identity, stale.sessionId);
   });
 });

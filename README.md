@@ -429,6 +429,20 @@ command.
   guarantees process-group cleanup, not identical visibility behavior across
   every emulator. Descendants that leave the owned POSIX process group are
   outside the portable ownership guarantee.
+- On macOS, closing the terminal window that hosts a foreground managed
+  supervisor delivers `SIGHUP`, so the supervisor shuts down gracefully and
+  clears its record. Windows console close raises `CTRL_CLOSE_EVENT`, which
+  Node.js cannot deliver as a catchable signal, and a force-kill
+  (`TerminateProcess` / `kill -9`) fires no handlers on any platform. When such
+  an abrupt death leaves a stale session record with no termination markers, a
+  later same-label `launch` or `kill` automatically reclaims it after proving
+  the predecessor is abandoned: its control endpoint is gone and its recorded
+  supervisor PID is dead. This is the same fail-closed precondition `reset`
+  uses, applied automatically so a dead supervisor never wedges the label. The
+  fail-closed refusal is preserved while the supervisor might still be alive
+  (endpoint alive, or PID alive but the endpoint is temporarily gone); in that
+  case use `termhelm kill`, or `termhelm reset --label <label> --force` only
+  when you are certain the process tree is dead.
 
 Plain launches use the same target validation and partial-launch rollback, but
 only managed launches publish authenticated label ownership and support
