@@ -71,6 +71,17 @@ Display the complete command and option reference with:
 termhelm --help
 ```
 
+Print the installed package version with:
+
+```sh
+termhelm --version
+termhelm -V
+```
+
+`--version`/`-V` is accepted before or alongside a command (`termhelm launch
+--version`) and takes precedence over the command payload. The version is read
+from the packaged `package.json` next to the compiled CLI.
+
 The examples below use descriptive placeholders:
 
 - `<TERMINAL_WINDOW_TITLE>`: the visible terminal window or tab title.

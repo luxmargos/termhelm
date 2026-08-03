@@ -1,4 +1,4 @@
-import { helpText, parseTerminalWindowsCliArgs } from './cli-core.js';
+import { helpText, parseTerminalWindowsCliArgs, versionText } from './cli-core.js';
 import {
   readTerminalWindowsConfigOptions,
   validateManagedTerminalLaunchOptions
@@ -26,6 +26,10 @@ async function executeTerminalWindowsCli(args: string[], output: CliOutput): Pro
   const request = parseTerminalWindowsCliArgs(args);
   if (request.help) {
     output.log(helpText());
+    return;
+  }
+  if (request.version) {
+    output.log(versionText());
     return;
   }
 

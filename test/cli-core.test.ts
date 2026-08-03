@@ -1,19 +1,21 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MANAGED_TERMINAL_LABEL_ERROR } from '../src/config.js';
-import { helpText, parseTerminalWindowsCliArgs } from '../src/cli-core.js';
+import { helpText, parseTerminalWindowsCliArgs, versionText } from '../src/cli-core.js';
 
 describe('CLI argument parsing', () => {
   it('parses launch config mode', () => {
     expect(parseTerminalWindowsCliArgs(['launch', '--config', 'termhelm.json'])).toEqual({
       mode: 'launch',
       help: false,
+      version: false,
       configPath: 'termhelm.json'
     });
     expect(parseTerminalWindowsCliArgs(['launch', '--detach', '--config', 'termhelm.json'])).toEqual({
       mode: 'launch',
       help: false,
+      version: false,
       configPath: 'termhelm.json',
       detached: true
     });
@@ -23,6 +25,7 @@ describe('CLI argument parsing', () => {
     expect(parseTerminalWindowsCliArgs(['kill', '--config', 'termhelm.json'])).toEqual({
       mode: 'kill',
       help: false,
+      version: false,
       configPath: 'termhelm.json'
     });
   });
@@ -195,7 +198,7 @@ describe('CLI argument parsing', () => {
 
   it('parses reset mode by inline label', () => {
     expect(parseTerminalWindowsCliArgs(['reset', '--label', 'stale']))
-      .toMatchObject({ mode: 'reset', help: false, managedOptions: { label: 'stale', labelScope: { type: 'user' } }, force: false });
+      .toMatchObject({ mode: 'reset', help: false, version: false, managedOptions: { label: 'stale', labelScope: { type: 'user' } }, force: false });
   });
 
   it('parses reset --force', () => {
@@ -234,15 +237,35 @@ describe('CLI argument parsing', () => {
   });
 
   it('provides help text', () => {
-    expect(parseTerminalWindowsCliArgs(['--help'])).toEqual({ help: true });
+    expect(parseTerminalWindowsCliArgs(['--help'])).toEqual({ help: true, version: false });
+    expect(parseTerminalWindowsCliArgs(['-h'])).toEqual({ help: true, version: false });
+    expect(parseTerminalWindowsCliArgs([])).toEqual({ help: true, version: false });
     expect(helpText()).toContain('termhelm launch [--detach] [--label <label>]');
     expect(helpText()).toContain('--detach');
     expect(helpText()).toContain('termhelm kill --label <label>');
     expect(helpText()).toContain('termhelm reset --label <label>');
     expect(helpText()).toContain('--force');
+    expect(helpText()).toContain('--version, -V');
+    expect(helpText()).toContain('--help, -h');
     expect(helpText()).toContain('crash-recovery escape hatch');
     expect(helpText()).toContain('A launch with a label is managed');
     expect(helpText()).toContain('Defaults to the current working directory');
     expect(helpText()).toContain('Defaults to the resolved --cwd');
+  });
+
+  it('parses a version request and reports the package version', () => {
+    expect(parseTerminalWindowsCliArgs(['--version'])).toEqual({ help: false, version: true });
+    expect(parseTerminalWindowsCliArgs(['-V'])).toEqual({ help: false, version: true });
+    expect(parseTerminalWindowsCliArgs(['launch', '--version'])).toEqual({ mode: 'launch', help: false, version: true });
+    expect(parseTerminalWindowsCliArgs(['kill', '-V'])).toEqual({ mode: 'kill', help: false, version: true });
+    expect(versionText()).toBe(`termhelm ${JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version}`);
+  });
+
+  it('prefers --version over a conflicting mode payload', () => {
+    expect(parseTerminalWindowsCliArgs(['launch', '--version', '--config', 'termhelm.json'])).toEqual({
+      mode: 'launch',
+      help: false,
+      version: true
+    });
   });
 });

@@ -1,5 +1,6 @@
-import { realpathSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { validateManagedTerminalLabel, validateManagedTerminalLaunchOptions } from './config.js';
 import type { ManagedTerminalLabelScope, ManagedTerminalLaunchOptions, ResolvedTerminalTarget } from './types.js';
@@ -9,6 +10,7 @@ export type CliMode = 'launch' | 'kill' | 'reset';
 export interface CliRequest {
   mode?: CliMode;
   help: boolean;
+  version: boolean;
   configPath?: string;
   target?: ResolvedTerminalTarget;
   managedOptions?: ManagedTerminalLaunchOptions;
@@ -38,7 +40,8 @@ Options:
   --project-root <path>        Project root. Defaults to the resolved --cwd for launch, or current directory for kill/reset.
   --detach                     Return after a managed session is ready and keep its supervisor hidden.
   --force                      With reset, skip the fail-closed liveness check. Use only when nothing is alive.
-  --help                       Show this help text.
+  --version, -V                Print the termhelm version and exit.
+  --help, -h                   Show this help text.
 
 A launch with a label is managed; a launch without one is plain. --detach is
 valid only for managed launch. Config files select managed behavior with
@@ -51,6 +54,20 @@ supervisor is no longer reachable (e.g. its terminal was closed mid-run). It
 refuses while the supervisor's control endpoint is still serving; use --force
 only when you are certain the process tree is dead.
 `;
+}
+
+let cachedVersion: string | undefined;
+
+export function versionText(): string {
+  if (cachedVersion === undefined) {
+    const packagePath = fileURLToPath(new URL('../package.json', import.meta.url));
+    const { version } = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown };
+    if (typeof version !== 'string' || version.length === 0) {
+      throw new Error('termhelm package.json is missing a readable version field.');
+    }
+    cachedVersion = `termhelm ${version}`;
+  }
+  return cachedVersion;
 }
 
 type CliValues = Record<string, string | string[] | boolean | undefined>;
@@ -136,7 +153,8 @@ function inlineManagedOptions(
 
 export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
   const [mode] = args;
-  if (!mode || mode === '--help' || mode === '-h') return { help: true };
+  if (!mode || mode === '--help' || mode === '-h') return { help: true, version: false };
+  if (mode === '--version' || mode === '-V') return { help: false, version: true };
   if (mode !== 'launch' && mode !== 'kill' && mode !== 'reset') throw new Error(`Unknown command: ${mode}`);
 
   const parsed = parseArgs({
@@ -153,12 +171,14 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
       'project-root': { type: 'string' },
       detach: { type: 'boolean' },
       force: { type: 'boolean' },
-      help: { type: 'boolean', short: 'h' }
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'V' }
     },
     allowPositionals: false
   });
 
-  if (parsed.values.help) return { mode, help: true };
+  if (parsed.values.help) return { mode, help: true, version: false };
+  if (parsed.values.version) return { mode, help: false, version: true };
 
   const values = parsed.values as CliValues;
   const configPath = values.config;
@@ -179,15 +199,15 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
   }
   if (typeof configPath === 'string') {
     return detached
-      ? { mode, help: false, configPath, detached: true }
-      : { mode, help: false, configPath };
+      ? { mode, help: false, version: false, configPath, detached: true }
+      : { mode, help: false, version: false, configPath };
   }
 
   if (mode === 'kill') {
     if (hasInlineTargetFlags) throw new Error('Kill accepts only managed label identity flags or --config.');
     const label = validateManagedTerminalLabel(values.label);
     const managedOptions = inlineManagedOptions(values, label);
-    return { mode, help: false, managedOptions };
+    return { mode, help: false, version: false, managedOptions };
   }
 
   if (mode === 'reset') {
@@ -195,7 +215,7 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
     if (hasInlineTargetFlags) throw new Error('Reset accepts only managed label identity flags or --config.');
     const label = validateManagedTerminalLabel(values.label);
     const managedOptions = inlineManagedOptions(values, label);
-    return { mode, help: false, managedOptions, force: values.force === true };
+    return { mode, help: false, version: false, managedOptions, force: values.force === true };
   }
 
   if (hasInlineTargetFlags) {
@@ -208,8 +228,8 @@ export function parseTerminalWindowsCliArgs(args: string[]): CliRequest {
       : inlineManagedOptions(values, label, target.cwd);
     if (detached && !managedOptions) throw new Error('--detach requires a managed --label.');
     return managedOptions
-      ? { mode, help: false, target, managedOptions, ...(detached ? { detached: true } : {}) }
-      : { mode, help: false, target };
+      ? { mode, help: false, version: false, target, managedOptions, ...(detached ? { detached: true } : {}) }
+      : { mode, help: false, version: false, target };
   }
 
   if (hasIdentityFlags) validateManagedTerminalLabel(values.label);

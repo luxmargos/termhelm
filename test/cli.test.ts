@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,24 @@ function configFile(
 }
 
 describe('CLI entry point', () => {
+  it('prints the version for --version and -V and exits cleanly', async () => {
+    const expected = `termhelm ${JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version}`;
+
+    const v1 = output();
+    await expect(runTerminalWindowsCli(['--version'], v1.sink)).resolves.toBe(0);
+    expect(v1.stdout).toEqual([expected]);
+    expect(v1.stderr).toEqual([]);
+
+    const v2 = output();
+    await expect(runTerminalWindowsCli(['-V'], v2.sink)).resolves.toBe(0);
+    expect(v2.stdout).toEqual([expected]);
+
+    const v3 = output();
+    await expect(runTerminalWindowsCli(['launch', '--version'], v3.sink)).resolves.toBe(0);
+    expect(v3.stdout).toEqual([expected]);
+
+    expect(api.launchTerminalWindows).not.toHaveBeenCalled();
+  });
   it('uses plain launch when no inline label is present', async () => {
     const messages = output();
     await expect(runTerminalWindowsCli([
