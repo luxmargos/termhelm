@@ -32,6 +32,8 @@
     "demo:managed:foreground": "pnpm run build && node examples/managed-launch/supervisor.mjs",
     "demo:managed:kill": "pnpm run build && node examples/managed-launch/kill.mjs",
     "demo:managed:smoke": "node examples/managed-launch/smoke.mjs",
+    "test:linux:container:build": "docker build -t termhelm-linux-acceptance -f docker/linux/Dockerfile .",
+    "test:linux:container": "pnpm run test:linux:container:build && docker run --rm termhelm-linux-acceptance",
     "print:help": "pnpm run build && node dist/cli.js --help",
     "test": "vitest run",
     "test:types": "tsc -p tsconfig.public-api.json",

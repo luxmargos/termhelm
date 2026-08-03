@@ -512,6 +512,7 @@ through `PATH` for non-FHS systems.
 | `pnpm run demo:managed:kill` | ✅ `killed` | ✅ `killed` | ✅ `killed` |
 | `termhelm reset --label <label> [--force]` (stale session recovery) | ✅ | ✅ Windows `\\.\\pipe` probe + PID liveness | ✅ Unix socket probe + PID liveness |
 | `pnpm run verify:release` (full release gate) | ✅ `TERMHELM_MANUAL_MACOS=1` | ✅ PowerShell 5.1 + 7 | ✅ `TERMHELM_LINUX_GUI_TEST=1` + Xvfb |
+| `pnpm run test:linux:container` (Docker: build + `demo:managed:*` + native xterm tests under Xvfb) | N/A | N/A | ✅ Debian container with Xvfb + xterm |
 | Visible terminal windows persist after launcher exits | ✅ Terminal.app tabs independent | ✅ `AllocConsole` + `CREATE_NEW_CONSOLE` + `SW_SHOWNORMAL`; controller hidden | ✅ `--wait` flag on terminal emulator |
 | Graceful shutdown via token removal / Ctrl+Break | ✅ SIGTERM via `osascript` | ✅ `AttachManagedConsole` + `GenerateConsoleCtrlEvent` on demand | ✅ POSIX process-group `SIGTERM`/`SIGKILL` |
 | Private directory ACL / permissions | ✅ 0700 dirs, 0600 files | ✅ Owner/SYSTEM-only inheritable DACLs | ✅ 0700 dirs, 0600 files |
@@ -551,6 +552,18 @@ checks, the full tracked test inventory, native helper checks, package creation,
 manifest validation, installation, import smoke testing, and executable-mode
 checks. `pnpm run verify:release:headless` is useful during development but is
 not release evidence.
+
+### Linux container acceptance
+
+`pnpm run test:linux:container` builds a Debian-based Docker image
+(`docker/linux/Dockerfile`) with Xvfb and xterm, then runs the `demo:managed:*`
+scripts and the native Linux xterm integration tests inside it under a virtual
+display. It is the fastest way to exercise the Linux managed lifecycle
+(detached launch, authenticated replacement, kill) without a host desktop. The
+`demo:managed:fresh` flow is interactive by design (it awaits the user closing
+the health-monitor terminal), so the container entrypoint
+(`docker/linux/test-managed.sh`) closes that monitor window itself once the
+managed daemons are healthy.
 
 Manual release sign-off must additionally cover Windows Terminal and legacy
 Console Host plus GNOME Wayland/Xorg, KDE Konsole, and XFCE Terminal. Record UI

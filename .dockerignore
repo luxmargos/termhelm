@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+.git
+temp
+demo
+/.plans
+.vscode
+*.log
+.pnpm-store
+.pi
